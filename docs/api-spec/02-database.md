@@ -439,11 +439,32 @@ cron_jobs (独立，通过 conversation_id 逻辑关联)
 
 | 类型 | 来源 | 说明 |
 |------|------|------|
-| `IQueryResult<T>` | database/types | 通用查询结果包装 |
 | `IPaginatedResult<T>` | database/types | 通用分页结果 |
 | `PaginatedResult<T>` | IConversationRepository | 简化分页结果（无 page/pageSize） |
 | `IUser` | database/types | 用户模型 |
 | `IMessageSearchItem` / `IMessageSearchResponse` | common/types/database | 消息搜索结果 |
+
+## 设计决策
+
+> 以下为原实现中识别到的设计缺陷，Rust 重写时应予以修正。
+
+### 1. 废弃 `IQueryResult<T>` 包装
+
+原实现每个数据库操作都返回 `{ success: boolean, data?: T, error?: string }`，调用方需逐一检查 `success` 字段。这在 Rust 中是反模式——直接使用 `Result<T, DbError>` 即可，编译器强制处理错误，无需手工检查标志位。
+
+原候选公共类型中的 `IQueryResult<T>` 不再迁移。
+
+### 2. 状态字段改用枚举
+
+原实现中大量状态字段使用字符串字面量 + CHECK 约束：
+
+- `conversations.status`: `"pending"` / `"running"` / `"finished"`
+- `messages.status`: `"finish"` / `"pending"` / `"error"` / `"work"`
+- `messages.position`: `"left"` / `"right"` / `"center"` / `"pop"`
+- `assistant_pairing_codes.status`: `"pending"` / `"approved"` / `"rejected"`
+- `remote_agents.status`: `"connected"` / `"disconnected"` / `"error"` / `"unknown"`
+
+Rust 中应定义为枚举类型（`#[derive(sqlx::Type)]` 或自定义序列化），获得编译时类型安全和穷尽匹配检查。
 
 ## Rust 迁移备注
 

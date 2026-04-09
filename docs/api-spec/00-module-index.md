@@ -23,6 +23,7 @@
 - **粒度**：功能语义级（描述"做什么"，而非"怎么实现"）
 - **协议映射**：每个 IPC 接口标注目标协议（HTTP / WebSocket / HTTP+WebSocket）
 - **公共类型**：梳理过程中标记候选公共类型，所有模块完成后集中提炼到 `01-common-types.md`
+- **重设计优于照搬**：梳理目标是提取功能语义，而非复刻原实现的 API 设计。原实现中存在的设计缺陷（命名不一致、格式混用、职责不清等）应在 Rust 重写时修正。梳理时遇到此类问题，在各模块文档中标注为「设计决策」并说明改进方向，前端/客户端随后适配新接口
 - **跨会话支持**：本索引追踪进度，新会话读取本文件即可恢复
 
 ## 文档模板
@@ -44,7 +45,7 @@
 |---|------|------|---------|------|
 | 1 | 公共类型与 Trait | 01-common-types.md | `process/utils/`, `common/types/`, `common/utils/`, `common/platform/` | ⬜ 待提炼（所有模块完成后） |
 | 2 | 数据模型与存储 | 02-database.md | `process/services/database/` | ✅ 已完成 |
-| 3 | 认证与用户管理 | 03-auth.md | `process/webserver/auth/`, `process/bridge/authBridge.ts` | ⬜ 未开始 |
+| 3 | 认证与用户管理 | 03-auth.md | `process/webserver/auth/`, `process/bridge/authBridge.ts` | ✅ 已完成 |
 | 4 | 系统设置 | 04-system-settings.md | `process/bridge/systemSettingsBridge.ts`, `process/bridge/modelBridge.ts`, `process/services/i18n/`, `common/config/` | ⬜ 未开始 |
 | 5 | 会话与消息管理 | 05-conversation.md | `process/bridge/conversationBridge.ts`, `process/bridge/acpConversationBridge.ts`, `process/bridge/geminiConversationBridge.ts`, `process/task/`, `common/chat/` | ⬜ 未开始 |
 | 6 | AI 后端集成 | 06-ai-agent.md | `process/agent/`, `process/task/*AgentManager.ts`, `process/worker/`, `process/bridge/bedrockBridge.ts`, `process/bridge/geminiBridge.ts`, `process/bridge/remoteAgentBridge.ts`, `common/api/` | ⬜ 未开始 |
