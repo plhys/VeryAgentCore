@@ -53,7 +53,7 @@
 | 8 | 文件与工作区 | 08-file-workspace.md | `process/bridge/fsBridge.ts`, `process/bridge/documentBridge.ts`, `process/bridge/fileWatchBridge.ts`, `process/bridge/workspaceSnapshotBridge.ts` | ✅ 已完成 |
 | 9 | 通道集成 | 09-channel.md | `process/channels/`, `process/bridge/channelBridge.ts`, `process/bridge/weixinLoginBridge.ts`, `process/webserver/routes/weixinLoginRoutes.ts` | ✅ 已完成 |
 | 10 | 团队模式 | 10-team.md | `process/team/` | ✅ 已完成 |
-| 11 | 定时任务 | 11-cron.md | `process/services/cron/`, `process/bridge/cronBridge.ts` | ⬜ 未开始 |
+| 11 | 定时任务 | 11-cron.md | `process/services/cron/`, `process/bridge/cronBridge.ts` | ✅ 已完成 |
 | 12 | MCP 协议 | 12-mcp.md | `process/services/mcpServices/`, `process/bridge/mcpBridge.ts` | ⬜ 未开始 |
 | 13 | 扩展系统 | 13-extension.md | `process/extensions/`, `process/bridge/extensionsBridge.ts`, `process/bridge/hubBridge.ts` | ⬜ 未开始 |
 | 14 | 应用生命周期 | 14-app-lifecycle.md | `process/bridge/updateBridge.ts`, `process/bridge/applicationBridge.ts`, `process/bridge/webuiBridge.ts`, `process/bridge/webuiQR.ts`, `process/bridge/notificationBridge.ts`, `process/webserver/config/`, `process/webserver/middleware/`, `process/webserver/types/`, `common/update/` | ⬜ 未开始 |
