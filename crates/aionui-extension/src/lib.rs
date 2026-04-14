@@ -6,6 +6,7 @@ pub mod loader;
 pub mod manifest;
 pub mod permission;
 pub mod registry;
+mod registry_helpers;
 pub mod resolvers;
 pub mod state;
 pub mod template;

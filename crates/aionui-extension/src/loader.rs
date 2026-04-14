@@ -28,10 +28,23 @@ pub struct ScanPath {
 /// In E2E test mode (`AIONUI_E2E_TEST=1`), only the environment variable
 /// paths are returned to ensure test isolation.
 pub fn resolve_scan_paths() -> Vec<ScanPath> {
+    let env_path = std::env::var("AIONUI_EXTENSIONS_PATH").ok();
+    let e2e_mode = is_e2e_test_mode();
+    resolve_scan_paths_inner(env_path.as_deref(), e2e_mode)
+}
+
+/// Inner implementation that accepts explicit parameters for testability.
+///
+/// Production callers should use [`resolve_scan_paths`] which reads from
+/// environment variables automatically.
+fn resolve_scan_paths_inner(
+    env_extensions_path: Option<&str>,
+    e2e_mode: bool,
+) -> Vec<ScanPath> {
     let mut paths = Vec::new();
 
     // 1. Environment variable paths (highest priority).
-    if let Ok(env_paths) = std::env::var("AIONUI_EXTENSIONS_PATH") {
+    if let Some(env_paths) = env_extensions_path {
         for p in env_paths.split(':') {
             let trimmed = p.trim();
             if !trimmed.is_empty() {
@@ -44,7 +57,7 @@ pub fn resolve_scan_paths() -> Vec<ScanPath> {
     }
 
     // E2E test mode: only scan env var paths for isolation.
-    if is_e2e_test_mode() {
+    if e2e_mode {
         return paths;
     }
 
@@ -569,64 +582,33 @@ mod tests {
         assert_eq!(filtered[1].manifest.name, "no-constraint");
     }
 
-    // -- resolve_scan_paths ----------------------------------------------------
+    // -- resolve_scan_paths_inner ------------------------------------------------
 
     #[test]
     fn resolve_scan_paths_includes_env_paths() {
-        // Temporarily set the env var for this test.
-        let _guard = EnvGuard::new("AIONUI_EXTENSIONS_PATH", "/tmp/test-exts");
-        let _e2e_guard = EnvGuard::remove("AIONUI_E2E_TEST");
-        let paths = resolve_scan_paths();
+        let paths = resolve_scan_paths_inner(Some("/tmp/test-exts"), false);
         assert!(paths.iter().any(|sp| sp.path.as_path() == Path::new("/tmp/test-exts")
             && sp.source == ExtensionSource::Env));
     }
 
     #[test]
     fn resolve_scan_paths_e2e_mode_only_env() {
-        let _guard = EnvGuard::new("AIONUI_E2E_TEST", "1");
-        let _ext_guard = EnvGuard::new("AIONUI_EXTENSIONS_PATH", "/tmp/e2e-exts");
-        let paths = resolve_scan_paths();
+        let paths = resolve_scan_paths_inner(Some("/tmp/e2e-exts"), true);
         assert!(paths.iter().all(|sp| sp.source == ExtensionSource::Env));
+        assert!(paths.iter().any(|sp| sp.path.as_path() == Path::new("/tmp/e2e-exts")));
     }
 
-    // -- test helpers ---------------------------------------------------------
-
-    /// RAII guard to set/restore an environment variable for a single test.
-    struct EnvGuard {
-        key: String,
-        original: Option<String>,
+    #[test]
+    fn resolve_scan_paths_no_env_includes_platform_dirs() {
+        let paths = resolve_scan_paths_inner(None, false);
+        // Should have at least one platform dir (home or appdata).
+        assert!(paths.iter().any(|sp| sp.source == ExtensionSource::Local
+            || sp.source == ExtensionSource::Appdata));
     }
 
-    impl EnvGuard {
-        fn new(key: &str, value: &str) -> Self {
-            let original = std::env::var(key).ok();
-            // SAFETY: test-only code running in serial (env var tests should
-            // not be run concurrently with other env-dependent tests).
-            unsafe { std::env::set_var(key, value) };
-            Self {
-                key: key.to_owned(),
-                original,
-            }
-        }
-
-        fn remove(key: &str) -> Self {
-            let original = std::env::var(key).ok();
-            // SAFETY: test-only code running in serial.
-            unsafe { std::env::remove_var(key) };
-            Self {
-                key: key.to_owned(),
-                original,
-            }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            match &self.original {
-                // SAFETY: test-only code running in serial.
-                Some(val) => unsafe { std::env::set_var(&self.key, val) },
-                None => unsafe { std::env::remove_var(&self.key) },
-            }
-        }
+    #[test]
+    fn resolve_scan_paths_e2e_no_env_returns_empty() {
+        let paths = resolve_scan_paths_inner(None, true);
+        assert!(paths.is_empty());
     }
 }

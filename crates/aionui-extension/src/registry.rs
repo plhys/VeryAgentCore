@@ -9,18 +9,25 @@ use serde_json::json;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-use crate::dependency::{validate_dependencies, DependencyValidationResult};
 use crate::error::ExtensionError;
 use crate::lifecycle::{execute_hook, needs_install_hook, resolve_hook_path, HookKind};
-use crate::loader::{filter_by_engine_compatibility, load_all, resolve_scan_paths, ScanPath};
+use crate::loader::{resolve_scan_paths, ScanPath};
+use crate::registry_helpers::{
+    build_state_map, load_and_validate, merge_persisted_states, run_deactivation_hooks,
+    to_summary,
+};
 use crate::resolvers::{resolve_all_contributions, resolve_i18n_for_all};
 use crate::state::ExtensionStateStore;
 use crate::types::{
-    ExtensionLifecyclePayload, ExtensionSource, ExtensionState, ExtensionSystemEvent,
+    ExtensionLifecyclePayload, ExtensionState, ExtensionSystemEvent,
     LoadedExtension, ResolvedAcpAdapter, ResolvedAgent, ResolvedAssistant, ResolvedChannelPlugin,
     ResolvedContributions, ResolvedModelProvider, ResolvedSettingsTab, ResolvedSkill,
     ResolvedTheme, WebuiContribution,
 };
+
+// Re-export ExtensionSummary from registry_helpers so that
+// `registry::{ExtensionRegistry, ExtensionSummary}` continues to work.
+pub use crate::registry_helpers::ExtensionSummary;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -80,40 +87,52 @@ impl ExtensionRegistry {
 // ---------------------------------------------------------------------------
 
 impl ExtensionRegistry {
-    /// Run the full initialization pipeline:
+    /// Run the full initialization pipeline using auto-detected scan paths.
     ///
-    /// 1. Resolve scan paths
-    /// 2. Load manifests from all directories
-    /// 3. Filter by engine compatibility
-    /// 4. Validate dependencies + topological sort
-    /// 5. Merge persisted states (enabled/disabled)
-    /// 6. Run lifecycle hooks (onInstall if needed, then onActivate)
-    /// 7. Resolve all contributions
-    /// 8. Persist updated states
+    /// Resolves scan paths from environment variables and platform defaults,
+    /// then delegates to [`Self::initialize_with_scan_paths`].
     pub async fn initialize(&self) -> Result<(), ExtensionError> {
-        info!("initializing extension registry");
-
-        // 1. Resolve scan paths.
         let scan_paths = resolve_scan_paths();
+        self.initialize_with_scan_paths(scan_paths).await
+    }
+
+    /// Run the full initialization pipeline with explicit scan paths.
+    ///
+    /// Prefer this over [`Self::initialize`] when the caller already knows
+    /// the extension directories (e.g., in tests or embedded deployments).
+    ///
+    /// Pipeline:
+    /// 1. Load manifests from all directories
+    /// 2. Filter by engine compatibility
+    /// 3. Validate dependencies + topological sort
+    /// 4. Merge persisted states (enabled/disabled)
+    /// 5. Run lifecycle hooks (onInstall if needed, then onActivate)
+    /// 6. Resolve all contributions
+    /// 7. Persist updated states
+    pub async fn initialize_with_scan_paths(
+        &self,
+        scan_paths: Vec<ScanPath>,
+    ) -> Result<(), ExtensionError> {
+        info!("initializing extension registry");
         debug!(count = scan_paths.len(), "resolved scan paths");
 
-        // 2-4. Load, filter, validate (all sync/blocking).
+        // 1-3. Load, filter, validate (all sync/blocking).
         let (extensions, dep_result) =
             load_and_validate(&scan_paths, &self.app_version);
 
-        // 5. Merge persisted states.
+        // 4. Merge persisted states.
         let persisted = self.state_store.load().await?;
         let extensions = merge_persisted_states(extensions, &persisted);
 
-        // 6. Run lifecycle hooks.
+        // 5. Run lifecycle hooks.
         let extensions = self
             .run_activation_hooks(extensions, &persisted)
             .await;
 
-        // 7. Resolve contributions.
+        // 6. Resolve contributions.
         let contributions = resolve_all_contributions(&extensions);
 
-        // 8. Persist updated states.
+        // 7. Persist updated states.
         let states = build_state_map(&extensions);
         self.state_store.set_all(states).await;
 
@@ -143,7 +162,7 @@ impl ExtensionRegistry {
 // ---------------------------------------------------------------------------
 
 impl ExtensionRegistry {
-    /// Hot-reload the registry: deactivate all → clear → reload → re-resolve.
+    /// Hot-reload the registry: deactivate all -> clear -> reload -> re-resolve.
     ///
     /// Emits `REGISTRY_RELOADED` event when complete.
     pub async fn hot_reload(&self) {
@@ -237,12 +256,13 @@ impl ExtensionRegistry {
 
     /// Disable an extension by name.
     ///
-    /// Optionally records a reason. Updates state, re-resolves contributions,
-    /// persists, and broadcasts `extensions.stateChanged`.
+    /// Optionally records a reason (logged for auditing). Updates state,
+    /// re-resolves contributions, persists, and broadcasts
+    /// `extensions.stateChanged`.
     pub async fn disable_extension(
         &self,
         name: &str,
-        _reason: Option<&str>,
+        reason: Option<&str>,
     ) -> Result<(), ExtensionError> {
         let state = {
             let mut guard = self.inner.write().await;
@@ -270,7 +290,11 @@ impl ExtensionRegistry {
         self.state_store.set(state).await;
         self.broadcast_state_changed(name, false);
 
-        info!(name, "extension disabled");
+        if let Some(r) = reason {
+            info!(name, reason = r, "extension disabled");
+        } else {
+            info!(name, "extension disabled");
+        }
         Ok(())
     }
 }
@@ -374,35 +398,6 @@ impl ExtensionRegistry {
 }
 
 // ---------------------------------------------------------------------------
-// Summary type (thin projection of LoadedExtension)
-// ---------------------------------------------------------------------------
-
-/// Lightweight summary of a loaded extension.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ExtensionSummary {
-    pub name: String,
-    pub version: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    pub enabled: bool,
-    pub source: ExtensionSource,
-}
-
-fn to_summary(ext: &LoadedExtension) -> ExtensionSummary {
-    ExtensionSummary {
-        name: ext.manifest.name.clone(),
-        version: ext.manifest.version.clone(),
-        display_name: ext.manifest.display_name.clone(),
-        description: ext.manifest.description.clone(),
-        enabled: ext.state.enabled,
-        source: ext.source,
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Event broadcasting helpers
 // ---------------------------------------------------------------------------
 
@@ -436,85 +431,8 @@ impl ExtensionRegistry {
 }
 
 // ---------------------------------------------------------------------------
-// Internal helpers
+// Activation hooks
 // ---------------------------------------------------------------------------
-
-/// Load extensions, filter by engine compatibility, validate dependencies, and
-/// sort by topological order. Returns the sorted extensions and the validation
-/// result.
-fn load_and_validate(
-    scan_paths: &[ScanPath],
-    app_version: &str,
-) -> (Vec<LoadedExtension>, DependencyValidationResult) {
-    let loaded = load_all(scan_paths);
-    debug!(count = loaded.len(), "loaded extension manifests");
-
-    let filtered = filter_by_engine_compatibility(loaded, app_version);
-    debug!(count = filtered.len(), "after engine compatibility filter");
-
-    let dep_result = validate_dependencies(&filtered);
-    let sorted = sort_by_load_order(filtered, &dep_result.load_order);
-    debug!(count = sorted.len(), "after dependency sort");
-
-    (sorted, dep_result)
-}
-
-/// Reorder extensions according to the given load order.
-///
-/// Extensions not in `load_order` are appended at the end in their original
-/// order.
-fn sort_by_load_order(
-    extensions: Vec<LoadedExtension>,
-    load_order: &[String],
-) -> Vec<LoadedExtension> {
-    let mut by_name: HashMap<String, LoadedExtension> = extensions
-        .into_iter()
-        .map(|e| (e.manifest.name.clone(), e))
-        .collect();
-
-    let mut sorted = Vec::with_capacity(by_name.len());
-
-    // First, add extensions in load_order.
-    for name in load_order {
-        if let Some(ext) = by_name.remove(name) {
-            sorted.push(ext);
-        }
-    }
-
-    // Append any remaining (not in load_order) in alphabetical order.
-    let mut remaining: Vec<LoadedExtension> = by_name.into_values().collect();
-    remaining.sort_by(|a, b| a.manifest.name.cmp(&b.manifest.name));
-    sorted.extend(remaining);
-
-    sorted
-}
-
-/// Merge persisted enabled/disabled states into freshly loaded extensions.
-///
-/// If no persisted state exists for an extension, it defaults to enabled.
-fn merge_persisted_states(
-    mut extensions: Vec<LoadedExtension>,
-    persisted: &HashMap<String, ExtensionState>,
-) -> Vec<LoadedExtension> {
-    for ext in &mut extensions {
-        if let Some(saved) = persisted.get(&ext.manifest.name) {
-            ext.state.enabled = saved.enabled;
-            ext.state.installed_at = saved.installed_at;
-            ext.state.last_activated_at = saved.last_activated_at;
-        }
-    }
-    extensions
-}
-
-/// Build a state map from the current extensions for persistence.
-fn build_state_map(
-    extensions: &[LoadedExtension],
-) -> HashMap<String, ExtensionState> {
-    extensions
-        .iter()
-        .map(|e| (e.state.name.clone(), e.state.clone()))
-        .collect()
-}
 
 impl ExtensionRegistry {
     /// Run lifecycle hooks for each extension in order:
@@ -596,40 +514,6 @@ impl ExtensionRegistry {
     }
 }
 
-/// Run `onDeactivate` hooks for all enabled extensions.
-///
-/// Errors are logged but do not propagate.
-async fn run_deactivation_hooks(extensions: &[LoadedExtension]) {
-    for ext in extensions {
-        if !ext.state.enabled {
-            continue;
-        }
-
-        let Some(hooks) = &ext.manifest.lifecycle else {
-            continue;
-        };
-        let Some(hook_path) = resolve_hook_path(hooks, HookKind::OnDeactivate) else {
-            continue;
-        };
-
-        let ext_dir = Path::new(&ext.directory);
-        if let Err(e) = execute_hook(
-            ext_dir,
-            hook_path,
-            HookKind::OnDeactivate,
-            &ext.manifest.name,
-        )
-        .await
-        {
-            warn!(
-                extension = %ext.manifest.name,
-                error = %e,
-                "onDeactivate hook failed during hot reload"
-            );
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
@@ -682,107 +566,6 @@ mod tests {
             "1.0.0".to_owned(),
         );
         (registry, store, bus)
-    }
-
-    // -- sort_by_load_order ---------------------------------------------------
-
-    #[test]
-    fn sort_respects_load_order() {
-        let exts = vec![
-            make_test_ext("ext-c", true),
-            make_test_ext("ext-a", true),
-            make_test_ext("ext-b", true),
-        ];
-        let order = vec![
-            "ext-a".to_owned(),
-            "ext-b".to_owned(),
-            "ext-c".to_owned(),
-        ];
-        let sorted = sort_by_load_order(exts, &order);
-        let names: Vec<&str> = sorted.iter().map(|e| e.manifest.name.as_str()).collect();
-        assert_eq!(names, vec!["ext-a", "ext-b", "ext-c"]);
-    }
-
-    #[test]
-    fn sort_appends_unordered_extensions() {
-        let exts = vec![
-            make_test_ext("ext-z", true),
-            make_test_ext("ext-a", true),
-            make_test_ext("ext-m", true),
-        ];
-        // Only ext-a is in load order
-        let order = vec!["ext-a".to_owned()];
-        let sorted = sort_by_load_order(exts, &order);
-        let names: Vec<&str> = sorted.iter().map(|e| e.manifest.name.as_str()).collect();
-        assert_eq!(names, vec!["ext-a", "ext-m", "ext-z"]);
-    }
-
-    #[test]
-    fn sort_empty_load_order() {
-        let exts = vec![
-            make_test_ext("ext-b", true),
-            make_test_ext("ext-a", true),
-        ];
-        let sorted = sort_by_load_order(exts, &[]);
-        let names: Vec<&str> = sorted.iter().map(|e| e.manifest.name.as_str()).collect();
-        assert_eq!(names, vec!["ext-a", "ext-b"]);
-    }
-
-    // -- merge_persisted_states ------------------------------------------------
-
-    #[test]
-    fn merge_applies_persisted_enabled() {
-        let exts = vec![make_test_ext("ext-a", true)];
-        let mut persisted = HashMap::new();
-        persisted.insert(
-            "ext-a".to_owned(),
-            ExtensionState {
-                name: "ext-a".to_owned(),
-                version: "1.0.0".to_owned(),
-                enabled: false,
-                installed_at: Some(500),
-                last_activated_at: Some(600),
-            },
-        );
-
-        let merged = merge_persisted_states(exts, &persisted);
-        assert!(!merged[0].state.enabled);
-        assert_eq!(merged[0].state.installed_at, Some(500));
-        assert_eq!(merged[0].state.last_activated_at, Some(600));
-    }
-
-    #[test]
-    fn merge_defaults_to_enabled_when_no_persisted() {
-        let exts = vec![make_test_ext("ext-a", true)];
-        let merged = merge_persisted_states(exts, &HashMap::new());
-        assert!(merged[0].state.enabled);
-    }
-
-    // -- build_state_map ------------------------------------------------------
-
-    #[test]
-    fn build_state_map_includes_all_extensions() {
-        let exts = vec![
-            make_test_ext("ext-a", true),
-            make_test_ext("ext-b", false),
-        ];
-        let map = build_state_map(&exts);
-        assert_eq!(map.len(), 2);
-        assert!(map["ext-a"].enabled);
-        assert!(!map["ext-b"].enabled);
-    }
-
-    // -- to_summary -----------------------------------------------------------
-
-    #[test]
-    fn summary_maps_fields_correctly() {
-        let ext = make_test_ext("my-ext", true);
-        let summary = to_summary(&ext);
-        assert_eq!(summary.name, "my-ext");
-        assert_eq!(summary.version, "1.0.0");
-        assert_eq!(summary.display_name.as_deref(), Some("my-ext Display"));
-        assert!(summary.enabled);
-        assert_eq!(summary.source, ExtensionSource::Local);
     }
 
     // -- enable_extension / disable_extension -----------------------------------

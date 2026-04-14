@@ -4,13 +4,16 @@
 //! These tests exercise `ExtensionRegistry` as a black box: initialization,
 //! enable/disable with event broadcasting, hot-reload sequence, and state
 //! persistence through the registry API.
+//!
+//! All tests use `initialize_with_scan_paths` with explicit paths to avoid
+//! process-level env var races when running in parallel.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use aionui_extension::{
     save_states_to_file, ExtensionManifest, ExtensionRegistry, ExtensionSource, ExtensionState,
-    ExtensionStateStore, LoadedExtension,
+    ExtensionStateStore, LoadedExtension, ScanPath,
 };
 use aionui_realtime::BroadcastEventBus;
 use tempfile::TempDir;
@@ -51,31 +54,15 @@ fn make_ext(name: &str, version: &str, enabled: bool) -> LoadedExtension {
     }
 }
 
-/// Create a registry pre-seeded with extensions (bypasses actual file loading).
-async fn seeded_registry(
-    extensions: Vec<LoadedExtension>,
-) -> (ExtensionRegistry, Arc<BroadcastEventBus>, TempDir) {
-    let tmp = TempDir::new().unwrap();
-    let store = ExtensionStateStore::new(tmp.path().join("states.json"));
-    let bus = Arc::new(BroadcastEventBus::new(64));
-    let registry = ExtensionRegistry::new(store, bus.clone(), "1.0.0".to_owned());
-
-    // Seed extensions directly via the internal initialize-like path:
-    // We use enable/disable later which requires extensions to exist.
-    // For black-box testing, we first save states and then use hot_reload
-    // with an empty scan path. Instead, we use the public API to verify
-    // behaviour by directly testing enable/disable on a pre-configured
-    // registry. This is a pragmatic approach since initialize() requires
-    // real directories on disk.
-    //
-    // We'll test initialize() separately with actual files.
-
-    // For seeded tests, we write extensions into the internal state
-    // through the init path using the test fixture directory approach.
+/// Write extension fixture files to `ext_dir` and return scan paths for them.
+fn write_fixtures(
+    tmp: &TempDir,
+    extensions: &[LoadedExtension],
+) -> (std::path::PathBuf, Vec<ScanPath>) {
     let ext_dir = tmp.path().join("extensions");
     std::fs::create_dir_all(&ext_dir).unwrap();
 
-    for ext in &extensions {
+    for ext in extensions {
         let dir = ext_dir.join(&ext.manifest.name);
         std::fs::create_dir_all(&dir).unwrap();
         let manifest = serde_json::json!({
@@ -91,6 +78,24 @@ async fn seeded_registry(
         .unwrap();
     }
 
+    let scan_paths = vec![ScanPath {
+        path: ext_dir.clone(),
+        source: ExtensionSource::Env,
+    }];
+    (ext_dir, scan_paths)
+}
+
+/// Create a registry pre-seeded with extensions (bypasses env var resolution).
+async fn seeded_registry(
+    extensions: Vec<LoadedExtension>,
+) -> (ExtensionRegistry, Arc<BroadcastEventBus>, TempDir) {
+    let tmp = TempDir::new().unwrap();
+    let store = ExtensionStateStore::new(tmp.path().join("states.json"));
+    let bus = Arc::new(BroadcastEventBus::new(64));
+    let registry = ExtensionRegistry::new(store, bus.clone(), "1.0.0".to_owned());
+
+    let (_, scan_paths) = write_fixtures(&tmp, &extensions);
+
     // Pre-populate state file for disabled extensions.
     let states: HashMap<String, ExtensionState> = extensions
         .iter()
@@ -98,19 +103,11 @@ async fn seeded_registry(
         .collect();
     save_states_to_file(&tmp.path().join("states.json"), &states).unwrap();
 
-    // Initialize using environment-variable path pointing to our fixture.
-    // We use AIONUI_E2E_TEST=1 + AIONUI_EXTENSIONS_PATH to isolate.
-    unsafe {
-        std::env::set_var("AIONUI_E2E_TEST", "1");
-        std::env::set_var("AIONUI_EXTENSIONS_PATH", ext_dir.to_str().unwrap());
-    }
-
-    registry.initialize().await.unwrap();
-
-    unsafe {
-        std::env::remove_var("AIONUI_E2E_TEST");
-        std::env::remove_var("AIONUI_EXTENSIONS_PATH");
-    }
+    // Initialize using explicit scan paths — no env vars needed.
+    registry
+        .initialize_with_scan_paths(scan_paths)
+        .await
+        .unwrap();
 
     (registry, bus, tmp)
 }
@@ -126,21 +123,18 @@ async fn eq1_get_loaded_extensions_empty() {
     let bus = Arc::new(BroadcastEventBus::new(16));
     let registry = ExtensionRegistry::new(store, bus, "1.0.0".to_owned());
 
-    // Set env to empty dir so initialize loads nothing.
+    // Empty directory — no extensions to load.
     let empty_dir = tmp.path().join("empty-exts");
     std::fs::create_dir_all(&empty_dir).unwrap();
 
-    unsafe {
-        std::env::set_var("AIONUI_E2E_TEST", "1");
-        std::env::set_var("AIONUI_EXTENSIONS_PATH", empty_dir.to_str().unwrap());
-    }
-
-    registry.initialize().await.unwrap();
-
-    unsafe {
-        std::env::remove_var("AIONUI_E2E_TEST");
-        std::env::remove_var("AIONUI_EXTENSIONS_PATH");
-    }
+    let scan_paths = vec![ScanPath {
+        path: empty_dir,
+        source: ExtensionSource::Env,
+    }];
+    registry
+        .initialize_with_scan_paths(scan_paths)
+        .await
+        .unwrap();
 
     let exts = registry.get_loaded_extensions().await;
     assert!(exts.is_empty(), "expected empty extension list");
@@ -314,7 +308,6 @@ async fn hr3_hot_reload_preserves_disabled_state() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[cfg_attr(not(feature = "serial_tests"), ignore = "env var race in parallel — passes with --test-threads=1")]
 async fn sp_enable_disable_persists_through_reload() {
     let tmp = TempDir::new().unwrap();
     let state_path = tmp.path().join("states.json");
@@ -335,14 +328,16 @@ async fn sp_enable_disable_persists_through_reload() {
     )
     .unwrap();
 
+    let scan_paths = vec![ScanPath {
+        path: ext_dir,
+        source: ExtensionSource::Env,
+    }];
+
     let registry = ExtensionRegistry::new(store.clone(), bus, "1.0.0".to_owned());
-
-    unsafe {
-        std::env::set_var("AIONUI_E2E_TEST", "1");
-        std::env::set_var("AIONUI_EXTENSIONS_PATH", ext_dir.to_str().unwrap());
-    }
-
-    registry.initialize().await.unwrap();
+    registry
+        .initialize_with_scan_paths(scan_paths.clone())
+        .await
+        .unwrap();
 
     // Extension should be enabled by default (SP-3).
     let exts = registry.get_loaded_extensions().await;
@@ -359,16 +354,13 @@ async fn sp_enable_disable_persists_through_reload() {
     assert!(!loaded["ext-a"].enabled);
 
     // Re-initialize (simulate restart) — should restore disabled state (SP-2).
-    // Keep env vars set so the second registry can find the extensions.
     let store2 = ExtensionStateStore::new(state_path);
     let bus2 = Arc::new(BroadcastEventBus::new(16));
     let registry2 = ExtensionRegistry::new(store2, bus2, "1.0.0".to_owned());
-    registry2.initialize().await.unwrap();
-
-    unsafe {
-        std::env::remove_var("AIONUI_E2E_TEST");
-        std::env::remove_var("AIONUI_EXTENSIONS_PATH");
-    }
+    registry2
+        .initialize_with_scan_paths(scan_paths)
+        .await
+        .unwrap();
 
     let exts2 = registry2.get_loaded_extensions().await;
     assert!(!exts2.is_empty(), "second registry should find extensions");
@@ -434,17 +426,14 @@ async fn initialize_sets_flag() {
     let empty_dir = tmp.path().join("empty-exts");
     std::fs::create_dir_all(&empty_dir).unwrap();
 
-    unsafe {
-        std::env::set_var("AIONUI_E2E_TEST", "1");
-        std::env::set_var("AIONUI_EXTENSIONS_PATH", empty_dir.to_str().unwrap());
-    }
-
-    registry.initialize().await.unwrap();
-
-    unsafe {
-        std::env::remove_var("AIONUI_E2E_TEST");
-        std::env::remove_var("AIONUI_EXTENSIONS_PATH");
-    }
+    let scan_paths = vec![ScanPath {
+        path: empty_dir,
+        source: ExtensionSource::Env,
+    }];
+    registry
+        .initialize_with_scan_paths(scan_paths)
+        .await
+        .unwrap();
 
     assert!(registry.is_initialized().await);
 }

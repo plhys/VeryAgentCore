@@ -135,8 +135,12 @@ fn create_watcher(
 
 /// Decide whether a file-system event should trigger a reload.
 ///
-/// We care about creates, modifications, removes, and renames. Access events
-/// and metadata-only changes are ignored.
+/// We care about creates, all modifications (data, metadata, renames), and
+/// removes. Only access events and unclassified `Other` events are ignored.
+///
+/// Note: `Modify(_)` intentionally matches all modify sub-kinds including
+/// metadata changes, because some platforms (e.g., macOS/FSEvents) report
+/// content changes as generic `Modify(Any)` rather than specific sub-kinds.
 fn is_relevant_event(event: &Event) -> bool {
     use notify::EventKind;
     matches!(
