@@ -49,6 +49,44 @@ pub const LIFECYCLE_ON_DEACTIVATE_TIMEOUT_SECS: u64 = 30;
 /// Route prefixes reserved for internal use — extensions cannot register these.
 pub const RESERVED_ROUTE_PREFIXES: &[&str] = &["/api/", "/auth/", "/ws/"];
 
+// ---------------------------------------------------------------------------
+// Skill & rule management
+// ---------------------------------------------------------------------------
+
+/// Default subdirectory name for user-created skills.
+pub const SKILLS_DIR_NAME: &str = "skills";
+
+/// Default subdirectory name for built-in skills.
+pub const BUILTIN_SKILLS_DIR_NAME: &str = "builtin-skills";
+
+/// Default subdirectory name for built-in rules.
+pub const BUILTIN_RULES_DIR_NAME: &str = "builtin-rules";
+
+/// Default subdirectory name for assistant-level rules.
+pub const ASSISTANT_RULES_DIR_NAME: &str = "assistant-rules";
+
+/// Default subdirectory name for assistant-level skills.
+pub const ASSISTANT_SKILLS_DIR_NAME: &str = "assistant-skills";
+
+/// Filename that identifies a skill directory.
+pub const SKILL_MANIFEST_FILE: &str = "SKILL.md";
+
+/// Persistence file for custom external skill paths.
+pub const CUSTOM_SKILL_PATHS_FILE: &str = "custom-skill-paths.json";
+
+/// Well-known skill source name for the aionui skills market.
+pub const SKILLS_MARKET_NAME: &str = "aionui-skills";
+
+/// Well-known skill source path for the aionui skills market.
+pub const SKILLS_MARKET_PATH: &str = "https://github.com/AionUI/aionui-skills";
+
+/// Common skill directory names to detect on the filesystem.
+pub const COMMON_SKILL_DIRS: &[(&str, &str)] = &[
+    ("Claude Skills", ".claude/skills"),
+    ("Gemini Skills", ".gemini/skills"),
+    ("Agents", ".agents"),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;

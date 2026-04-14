@@ -76,6 +76,15 @@ pub enum ExtensionError {
     #[error("State persistence failed: {0}")]
     StatePersistence(String),
 
+    #[error("Cannot delete built-in skill: {0}")]
+    BuiltinSkillDeletion(String),
+
+    #[error("Skill not found: {0}")]
+    SkillNotFound(String),
+
+    #[error("Invalid skill path: {0}")]
+    InvalidSkillPath(String),
+
     #[error("{0}")]
     Io(#[from] std::io::Error),
 
@@ -119,6 +128,15 @@ impl From<ExtensionError> for AppError {
                 AppError::NotFound(format!("Extension not found: {name}"))
             }
             ExtensionError::StatePersistence(msg) => AppError::Internal(msg),
+            ExtensionError::BuiltinSkillDeletion(name) => {
+                AppError::BadRequest(format!("Cannot delete built-in skill: {name}"))
+            }
+            ExtensionError::SkillNotFound(name) => {
+                AppError::NotFound(format!("Skill not found: {name}"))
+            }
+            ExtensionError::InvalidSkillPath(path) => {
+                AppError::BadRequest(format!("Invalid skill path: {path}"))
+            }
             ExtensionError::Io(e) => AppError::Internal(e.to_string()),
             ExtensionError::JsonParse(e) => AppError::BadRequest(e.to_string()),
         }
