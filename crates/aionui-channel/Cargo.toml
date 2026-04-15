@@ -8,7 +8,7 @@ default = ["telegram"]
 telegram = ["dep:reqwest"]
 lark = ["dep:reqwest", "dep:tokio-tungstenite", "dep:futures-util"]
 dingtalk = ["dep:reqwest", "dep:tokio-tungstenite", "dep:futures-util"]
-weixin = ["dep:reqwest"]
+weixin = ["dep:reqwest", "dep:futures-util"]
 
 [dependencies]
 aionui-common.workspace = true
@@ -17,6 +17,7 @@ aionui-api-types.workspace = true
 aionui-realtime.workspace = true
 aionui-conversation.workspace = true
 aionui-ai-agent.workspace = true
+axum.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

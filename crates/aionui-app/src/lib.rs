@@ -36,6 +36,7 @@ use aionui_mcp::{
     IFlowAdapter, McpAgentAdapter, McpConfigService, McpConnectionTestService, McpRouterState,
     McpSyncService, OpencodeAdapter, QwenAdapter, mcp_routes,
 };
+use aionui_channel::{ChannelRouterState, channel_routes};
 use aionui_realtime::{
     BroadcastEventBus, NoopMessageRouter, WebSocketManager, WsHandlerState, ws_upgrade_handler,
 };
@@ -192,6 +193,7 @@ pub struct ModuleStates {
     pub extension: ExtensionRouterState,
     pub hub: HubRouterState,
     pub skill: SkillRouterState,
+    pub channel: ChannelRouterState,
 }
 
 /// Build all default `ModuleStates` from application services.
@@ -209,6 +211,7 @@ pub async fn build_module_states(services: &AppServices) -> ModuleStates {
         extension: ext_state,
         hub: hub_state,
         skill: skill_state,
+        channel: build_channel_state(services),
     }
 }
 
@@ -343,6 +346,45 @@ pub fn build_mcp_state(services: &AppServices) -> McpRouterState {
         sync_service: McpSyncService::new(repo, adapters),
         connection_test_service: McpConnectionTestService::new(http_client.clone()),
         oauth_service: aionui_mcp::McpOAuthService::new(oauth_token_repo, http_client),
+    }
+}
+
+/// Build the default `ChannelRouterState` from application services.
+pub fn build_channel_state(services: &AppServices) -> ChannelRouterState {
+    let pool = services.database.pool().clone();
+    let repo: Arc<dyn aionui_db::IChannelRepository> =
+        Arc::new(aionui_db::SqliteChannelRepository::new(pool));
+    let encryption_key = derive_encryption_key(&services.jwt_secret_raw);
+
+    let (message_tx, _message_rx) = tokio::sync::mpsc::channel(256);
+    let (confirm_tx, _confirm_rx) = tokio::sync::mpsc::channel(256);
+
+    let manager = Arc::new(aionui_channel::manager::ChannelManager::new(
+        repo.clone(),
+        services.event_bus.clone(),
+        encryption_key,
+        message_tx,
+        confirm_tx,
+    ));
+
+    let pairing_service = Arc::new(aionui_channel::pairing::PairingService::new(
+        repo.clone(),
+        services.event_bus.clone(),
+    ));
+
+    let session_manager = Arc::new(aionui_channel::session::SessionManager::new(
+        repo.clone(),
+    ));
+
+    let plugin_factory: Arc<aionui_channel::manager::PluginFactory> =
+        Arc::new(Box::new(|pt| aionui_channel::plugins::create_plugin(pt)));
+
+    ChannelRouterState {
+        manager,
+        pairing_service,
+        session_manager,
+        repo,
+        plugin_factory,
     }
 }
 
@@ -488,6 +530,10 @@ pub fn create_router_with_all_state(
 
     // Skill routes protected by auth middleware
     let skill_authenticated = skill_routes(states.skill)
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
+    // Channel routes protected by auth middleware
+    let channel_authenticated = channel_routes(states.channel)
         .route_layer(from_fn_with_state(auth_mw_state, auth_middleware));
 
     // WebSocket upgrade route — exempt from CSRF (no cookie-based
@@ -510,6 +556,7 @@ pub fn create_router_with_all_state(
         .merge(extension_authenticated)
         .merge(hub_authenticated)
         .merge(skill_authenticated)
+        .merge(channel_authenticated)
         .layer(middleware::from_fn_with_state(
             services.cookie_config.clone(),
             csrf_middleware,

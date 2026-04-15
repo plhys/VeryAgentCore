@@ -6,5 +6,10 @@ pub mod message_service;
 pub mod pairing;
 pub mod plugin;
 pub mod plugins;
+pub mod routes;
 pub mod session;
 pub mod types;
+
+pub use routes::{ChannelRouterState, channel_routes};
+#[cfg(feature = "weixin")]
+pub use routes::weixin_login_route;
