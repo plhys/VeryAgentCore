@@ -251,12 +251,12 @@ impl ActionExecutor {
     ) -> Result<ActionResponse, ChannelError> {
         match action.action.as_str() {
             "session.new" => {
-                // Cleanup current sessions for this user+chat, then create fresh
+                // Delete old session for this user+chat, then create fresh
                 let user_id = internal_user_id;
                 let chat_id = &action.context.chat_id;
                 let session = self
                     .session_mgr
-                    .get_or_create_session(
+                    .reset_session(
                         user_id,
                         chat_id,
                         &self.default_agent_type,
@@ -420,6 +420,21 @@ impl ActionExecutor {
                     .and_then(|p| p.get("agentType"))
                     .map(|s| s.as_str())
                     .unwrap_or(&self.default_agent_type);
+
+                // Persist the agent_type change to the session
+                let chat_id = &action.context.chat_id;
+                let session = self
+                    .session_mgr
+                    .get_or_create_session(
+                        internal_user_id,
+                        chat_id,
+                        agent_type,
+                        None,
+                    )
+                    .await?;
+                self.session_mgr
+                    .update_agent_type(&session.id, agent_type)
+                    .await?;
 
                 Ok(ActionResponse {
                     text: Some(format!("Agent switched to: {agent_type}")),
@@ -737,8 +752,45 @@ mod tests {
         ) -> Result<(), DbError> {
             Ok(())
         }
+        async fn update_session_conversation(
+            &self,
+            id: &str,
+            conversation_id: &str,
+        ) -> Result<(), DbError> {
+            let mut sessions = self.sessions.lock().unwrap();
+            if let Some(s) = sessions.iter_mut().find(|s| s.id == id) {
+                s.conversation_id = Some(conversation_id.to_owned());
+                Ok(())
+            } else {
+                Err(DbError::NotFound(id.into()))
+            }
+        }
+        async fn update_session_agent_type(
+            &self,
+            id: &str,
+            agent_type: &str,
+        ) -> Result<(), DbError> {
+            let mut sessions = self.sessions.lock().unwrap();
+            if let Some(s) = sessions.iter_mut().find(|s| s.id == id) {
+                s.agent_type = agent_type.to_owned();
+                Ok(())
+            } else {
+                Err(DbError::NotFound(id.into()))
+            }
+        }
         async fn delete_sessions_by_user(&self, user_id: &str) -> Result<(), DbError> {
             self.sessions.lock().unwrap().retain(|s| s.user_id != user_id);
+            Ok(())
+        }
+        async fn delete_session_by_user_chat(
+            &self,
+            user_id: &str,
+            chat_id: &str,
+        ) -> Result<(), DbError> {
+            let mut sessions = self.sessions.lock().unwrap();
+            sessions.retain(|s| {
+                !(s.user_id == user_id && s.chat_id.as_deref() == Some(chat_id))
+            });
             Ok(())
         }
 
@@ -1022,6 +1074,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_new_resets_existing_session() {
+        let (executor, repo) = setup();
+        repo.add_authorized_user("tg_42", "telegram");
+
+        // First: send a text message to create a session
+        let text_msg = make_text_message("tg_42", "chat_1", "Hello", PluginType::Telegram);
+        let r1 = executor.handle_incoming_message(&text_msg).await.unwrap();
+        let sid1 = match r1 {
+            MessageResult::Dispatched { session_id, .. } => session_id,
+            _ => panic!("Expected Dispatched"),
+        };
+
+        // Then: session.new should delete old + create fresh
+        let new_msg = make_action_message(
+            "tg_42",
+            "chat_1",
+            "session.new",
+            ActionCategory::System,
+            PluginType::Telegram,
+            None,
+        );
+        let r2 = executor.handle_incoming_message(&new_msg).await.unwrap();
+        match r2 {
+            MessageResult::Action(resp) => {
+                let text = resp.text.unwrap();
+                assert!(text.contains("New session"));
+            }
+            _ => panic!("Expected Action result"),
+        }
+
+        // Send another text message — the session ID should differ
+        let text_msg2 = make_text_message("tg_42", "chat_1", "Again", PluginType::Telegram);
+        let r3 = executor.handle_incoming_message(&text_msg2).await.unwrap();
+        let sid3 = match r3 {
+            MessageResult::Dispatched { session_id, .. } => session_id,
+            _ => panic!("Expected Dispatched"),
+        };
+        // New session has different full ID (reset deleted the old one)
+        assert_ne!(sid1, sid3);
+
+        // Only 1 session should exist for this user+chat
+        let sessions = repo.sessions.lock().unwrap();
+        let user_chat_sessions: Vec<_> = sessions
+            .iter()
+            .filter(|s| {
+                s.user_id == "user_tg_42"
+                    && s.chat_id.as_deref() == Some("chat_1")
+            })
+            .collect();
+        assert_eq!(user_chat_sessions.len(), 1);
+    }
+
+    #[tokio::test]
     async fn session_status_shows_info() {
         let (executor, repo) = setup();
         repo.add_authorized_user("tg_42", "telegram");
@@ -1093,6 +1198,39 @@ mod tests {
             }
             _ => panic!("Expected Action result"),
         }
+    }
+
+    #[tokio::test]
+    async fn agent_select_persists_agent_type() {
+        let (executor, repo) = setup();
+        repo.add_authorized_user("tg_42", "telegram");
+
+        // First: send a text to create a session (defaults to "gemini")
+        let text_msg = make_text_message("tg_42", "chat_1", "Hello", PluginType::Telegram);
+        executor.handle_incoming_message(&text_msg).await.unwrap();
+
+        // Then: switch agent to "acp"
+        let params = HashMap::from([("agentType".into(), "acp".into())]);
+        let select_msg = make_action_message(
+            "tg_42",
+            "chat_1",
+            "agent.select",
+            ActionCategory::System,
+            PluginType::Telegram,
+            Some(params),
+        );
+        executor.handle_incoming_message(&select_msg).await.unwrap();
+
+        // Verify session's agent_type was updated in the repo
+        let sessions = repo.sessions.lock().unwrap();
+        let session = sessions
+            .iter()
+            .find(|s| {
+                s.user_id == "user_tg_42"
+                    && s.chat_id.as_deref() == Some("chat_1")
+            })
+            .expect("session should exist");
+        assert_eq!(session.agent_type, "acp");
     }
 
     // ── Chat action tests ──────────────────────────────────────────────

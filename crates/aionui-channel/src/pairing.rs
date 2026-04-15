@@ -459,7 +459,28 @@ mod tests {
         ) -> Result<(), DbError> {
             Ok(())
         }
+        async fn update_session_conversation(
+            &self,
+            _id: &str,
+            _conversation_id: &str,
+        ) -> Result<(), DbError> {
+            Ok(())
+        }
+        async fn update_session_agent_type(
+            &self,
+            _id: &str,
+            _agent_type: &str,
+        ) -> Result<(), DbError> {
+            Ok(())
+        }
         async fn delete_sessions_by_user(&self, _user_id: &str) -> Result<(), DbError> {
+            Ok(())
+        }
+        async fn delete_session_by_user_chat(
+            &self,
+            _user_id: &str,
+            _chat_id: &str,
+        ) -> Result<(), DbError> {
             Ok(())
         }
 

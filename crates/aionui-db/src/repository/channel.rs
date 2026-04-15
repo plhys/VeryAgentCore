@@ -85,8 +85,29 @@ pub trait IChannelRepository: Send + Sync {
         last_activity: TimestampMs,
     ) -> Result<(), DbError>;
 
+    /// Updates the `conversation_id` of a session.
+    async fn update_session_conversation(
+        &self,
+        id: &str,
+        conversation_id: &str,
+    ) -> Result<(), DbError>;
+
+    /// Updates the `agent_type` of a session.
+    async fn update_session_agent_type(
+        &self,
+        id: &str,
+        agent_type: &str,
+    ) -> Result<(), DbError>;
+
     /// Deletes all sessions belonging to a user.
     async fn delete_sessions_by_user(&self, user_id: &str) -> Result<(), DbError>;
+
+    /// Deletes the session for a specific user + chat pair.
+    async fn delete_session_by_user_chat(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+    ) -> Result<(), DbError>;
 
     // ── Pairing Codes ────────────────────────────────────────────────
 

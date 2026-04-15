@@ -316,11 +316,75 @@ impl IChannelRepository for SqliteChannelRepository {
         Ok(())
     }
 
+    async fn update_session_conversation(
+        &self,
+        id: &str,
+        conversation_id: &str,
+    ) -> Result<(), DbError> {
+        let now = aionui_common::now_ms();
+        let result = sqlx::query(
+            "UPDATE assistant_sessions \
+             SET conversation_id = ?, last_activity = ? \
+             WHERE id = ?",
+        )
+        .bind(conversation_id)
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(DbError::NotFound(format!(
+                "Session '{id}' not found"
+            )));
+        }
+        Ok(())
+    }
+
+    async fn update_session_agent_type(
+        &self,
+        id: &str,
+        agent_type: &str,
+    ) -> Result<(), DbError> {
+        let now = aionui_common::now_ms();
+        let result = sqlx::query(
+            "UPDATE assistant_sessions \
+             SET agent_type = ?, last_activity = ? \
+             WHERE id = ?",
+        )
+        .bind(agent_type)
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(DbError::NotFound(format!(
+                "Session '{id}' not found"
+            )));
+        }
+        Ok(())
+    }
+
     async fn delete_sessions_by_user(&self, user_id: &str) -> Result<(), DbError> {
         sqlx::query("DELETE FROM assistant_sessions WHERE user_id = ?")
             .bind(user_id)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    async fn delete_session_by_user_chat(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "DELETE FROM assistant_sessions \
+             WHERE user_id = ? AND chat_id = ?",
+        )
+        .bind(user_id)
+        .bind(chat_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -879,6 +943,131 @@ mod tests {
         let (repo, _db) = setup().await;
         // No sessions exist for this user — should not error.
         repo.delete_sessions_by_user("usr-1").await.unwrap();
+    }
+
+    /// Helper to create a stub conversation for FK-constrained tests.
+    async fn create_stub_conversation(pool: &SqlitePool, conv_id: &str) {
+        let now = aionui_common::now_ms();
+        // Create prerequisite user first (matches `users` table schema)
+        sqlx::query(
+            "INSERT OR IGNORE INTO users \
+                (id, username, password_hash, created_at, updated_at) \
+             VALUES ('sys_test', 'test_user', 'hash', ?1, ?1)",
+        )
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO conversations (id, user_id, name, type, created_at, updated_at) \
+             VALUES (?1, 'sys_test', 'Test Conv', 'chat', ?2, ?2)",
+        )
+        .bind(conv_id)
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn update_session_conversation_persists() {
+        let (repo, db) = setup().await;
+        repo.create_user(&sample_user()).await.unwrap();
+
+        let new = sample_session("usr-1");
+        repo.get_or_create_session("usr-1", "chat-abc", &new)
+            .await
+            .unwrap();
+
+        create_stub_conversation(db.pool(), "conv-42").await;
+
+        repo.update_session_conversation("sess-1", "conv-42")
+            .await
+            .unwrap();
+
+        let found = repo.get_session("sess-1").await.unwrap().unwrap();
+        assert_eq!(found.conversation_id.as_deref(), Some("conv-42"));
+    }
+
+    #[tokio::test]
+    async fn update_session_conversation_not_found() {
+        let (repo, _db) = setup().await;
+        let err = repo
+            .update_session_conversation("nope", "conv-1")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn update_session_agent_type_persists() {
+        let (repo, _db) = setup().await;
+        repo.create_user(&sample_user()).await.unwrap();
+
+        let new = sample_session("usr-1");
+        repo.get_or_create_session("usr-1", "chat-abc", &new)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            repo.get_session("sess-1").await.unwrap().unwrap().agent_type,
+            "gemini"
+        );
+
+        repo.update_session_agent_type("sess-1", "acp")
+            .await
+            .unwrap();
+
+        let found = repo.get_session("sess-1").await.unwrap().unwrap();
+        assert_eq!(found.agent_type, "acp");
+    }
+
+    #[tokio::test]
+    async fn update_session_agent_type_not_found() {
+        let (repo, _db) = setup().await;
+        let err = repo
+            .update_session_agent_type("nope", "acp")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn delete_session_by_user_chat_removes_only_target() {
+        let (repo, _db) = setup().await;
+        repo.create_user(&sample_user()).await.unwrap();
+
+        let s1 = sample_session("usr-1");
+        repo.get_or_create_session("usr-1", "chat-abc", &s1)
+            .await
+            .unwrap();
+
+        let s2 = AssistantSessionRow {
+            id: "sess-2".into(),
+            chat_id: Some("chat-xyz".into()),
+            ..sample_session("usr-1")
+        };
+        repo.get_or_create_session("usr-1", "chat-xyz", &s2)
+            .await
+            .unwrap();
+
+        repo.delete_session_by_user_chat("usr-1", "chat-abc")
+            .await
+            .unwrap();
+
+        let remaining = repo.get_all_sessions().await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].chat_id.as_deref(), Some("chat-xyz"));
+    }
+
+    #[tokio::test]
+    async fn delete_session_by_user_chat_no_match_is_ok() {
+        let (repo, _db) = setup().await;
+        // No sessions exist — should not error.
+        repo.delete_session_by_user_chat("usr-1", "chat-abc")
+            .await
+            .unwrap();
     }
 
     // ── Pairing tests ────────────────────────────────────────────────

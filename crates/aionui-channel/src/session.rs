@@ -71,6 +71,68 @@ impl SessionManager {
         Ok(sessions)
     }
 
+    /// Deletes the existing session for a user+chat pair and creates a
+    /// fresh one. Returns the newly created session.
+    ///
+    /// Used by `session.new` to give the user a clean slate in a chat.
+    pub async fn reset_session(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+        agent_type: &str,
+        workspace: Option<&str>,
+    ) -> Result<AssistantSessionRow, ChannelError> {
+        // Delete old session if it exists
+        self.repo
+            .delete_session_by_user_chat(user_id, chat_id)
+            .await?;
+
+        // Create a fresh session
+        let now = now_ms();
+        let new_row = AssistantSessionRow {
+            id: generate_id(),
+            user_id: user_id.to_owned(),
+            agent_type: agent_type.to_owned(),
+            conversation_id: None,
+            workspace: workspace.map(String::from),
+            chat_id: Some(chat_id.to_owned()),
+            created_at: now,
+            last_activity: now,
+        };
+
+        let session = self
+            .repo
+            .get_or_create_session(user_id, chat_id, &new_row)
+            .await?;
+
+        info!(
+            session_id = %session.id,
+            user_id = %user_id,
+            chat_id = %chat_id,
+            "session reset"
+        );
+
+        Ok(session)
+    }
+
+    /// Updates the agent_type for an existing session.
+    pub async fn update_agent_type(
+        &self,
+        session_id: &str,
+        agent_type: &str,
+    ) -> Result<(), ChannelError> {
+        self.repo
+            .update_session_agent_type(session_id, agent_type)
+            .await?;
+
+        debug!(
+            session_id = %session_id,
+            agent_type = %agent_type,
+            "session agent_type updated"
+        );
+        Ok(())
+    }
+
     /// Removes all sessions belonging to a user.
     ///
     /// Called when a user is revoked to clean up their session state.
@@ -83,27 +145,17 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Updates the conversation binding for a session.
+    /// Persists the conversation binding for a session.
     ///
     /// Called after a new conversation is created for this session,
-    /// linking the session to its backing conversation.
+    /// linking the session to its backing conversation in the database.
     pub async fn bind_conversation(
         &self,
         session_id: &str,
         conversation_id: &str,
     ) -> Result<(), ChannelError> {
-        // We re-fetch the session to ensure it exists
-        let session = self
-            .repo
-            .get_session(session_id)
-            .await?
-            .ok_or_else(|| ChannelError::SessionNotFound(session_id.to_owned()))?;
-
-        // Update last_activity (the DB layer handles the actual bind
-        // via get_or_create_session; here we just track activity)
-        let _ = session;
         self.repo
-            .update_session_activity(session_id, now_ms())
+            .update_session_conversation(session_id, conversation_id)
             .await?;
 
         debug!(
@@ -237,9 +289,51 @@ mod tests {
             }
         }
 
+        async fn update_session_conversation(
+            &self,
+            id: &str,
+            conversation_id: &str,
+        ) -> Result<(), DbError> {
+            let mut sessions = self.sessions.lock().unwrap();
+            if let Some(s) = sessions.iter_mut().find(|s| s.id == id) {
+                s.conversation_id = Some(conversation_id.to_owned());
+                s.last_activity = aionui_common::now_ms();
+                Ok(())
+            } else {
+                Err(DbError::NotFound(id.into()))
+            }
+        }
+
+        async fn update_session_agent_type(
+            &self,
+            id: &str,
+            agent_type: &str,
+        ) -> Result<(), DbError> {
+            let mut sessions = self.sessions.lock().unwrap();
+            if let Some(s) = sessions.iter_mut().find(|s| s.id == id) {
+                s.agent_type = agent_type.to_owned();
+                s.last_activity = aionui_common::now_ms();
+                Ok(())
+            } else {
+                Err(DbError::NotFound(id.into()))
+            }
+        }
+
         async fn delete_sessions_by_user(&self, user_id: &str) -> Result<(), DbError> {
             let mut sessions = self.sessions.lock().unwrap();
             sessions.retain(|s| s.user_id != user_id);
+            Ok(())
+        }
+
+        async fn delete_session_by_user_chat(
+            &self,
+            user_id: &str,
+            chat_id: &str,
+        ) -> Result<(), DbError> {
+            let mut sessions = self.sessions.lock().unwrap();
+            sessions.retain(|s| {
+                !(s.user_id == user_id && s.chat_id.as_deref() == Some(chat_id))
+            });
             Ok(())
         }
 
@@ -418,16 +512,13 @@ mod tests {
     // ── bind_conversation ──────────────────────────────────────────────
 
     #[tokio::test]
-    async fn bind_conversation_updates_activity() {
+    async fn bind_conversation_persists_conversation_id() {
         let (mgr, repo) = make_manager();
         let session = mgr
             .get_or_create_session("u1", "c1", "acp", None)
             .await
             .unwrap();
-        let original_activity = session.last_activity;
-
-        // Small delay to ensure timestamp differs
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        assert!(session.conversation_id.is_none());
 
         mgr.bind_conversation(&session.id, "conv_123")
             .await
@@ -438,7 +529,10 @@ mod tests {
             .into_iter()
             .find(|s| s.id == session.id)
             .unwrap();
-        assert!(updated.last_activity >= original_activity);
+        assert_eq!(
+            updated.conversation_id.as_deref(),
+            Some("conv_123")
+        );
     }
 
     #[tokio::test]
@@ -446,8 +540,74 @@ mod tests {
         let (mgr, _repo) = make_manager();
         let err = mgr
             .bind_conversation("nonexistent", "conv_123")
+            .await;
+        assert!(err.is_err());
+    }
+
+    // ── reset_session ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn reset_session_creates_fresh_session() {
+        let (mgr, repo) = make_manager();
+        let s1 = mgr
+            .get_or_create_session("u1", "c1", "gemini", None)
             .await
-            .unwrap_err();
-        assert!(matches!(err, ChannelError::SessionNotFound(_)));
+            .unwrap();
+
+        let s2 = mgr
+            .reset_session("u1", "c1", "gemini", None)
+            .await
+            .unwrap();
+
+        // New session should have a different ID
+        assert_ne!(s1.id, s2.id);
+        assert_eq!(s2.user_id, "u1");
+        assert_eq!(s2.chat_id.as_deref(), Some("c1"));
+        assert!(s2.conversation_id.is_none());
+
+        // Only 1 session should exist (old one deleted)
+        assert_eq!(repo.get_sessions().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn reset_session_noop_when_no_existing() {
+        let (mgr, repo) = make_manager();
+        let session = mgr
+            .reset_session("u1", "c1", "acp", None)
+            .await
+            .unwrap();
+
+        assert_eq!(session.user_id, "u1");
+        assert_eq!(repo.get_sessions().len(), 1);
+    }
+
+    // ── update_agent_type ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn update_agent_type_persists() {
+        let (mgr, repo) = make_manager();
+        let session = mgr
+            .get_or_create_session("u1", "c1", "gemini", None)
+            .await
+            .unwrap();
+        assert_eq!(session.agent_type, "gemini");
+
+        mgr.update_agent_type(&session.id, "acp").await.unwrap();
+
+        let updated = repo
+            .get_sessions()
+            .into_iter()
+            .find(|s| s.id == session.id)
+            .unwrap();
+        assert_eq!(updated.agent_type, "acp");
+    }
+
+    #[tokio::test]
+    async fn update_agent_type_not_found() {
+        let (mgr, _repo) = make_manager();
+        let err = mgr
+            .update_agent_type("nonexistent", "acp")
+            .await;
+        assert!(err.is_err());
     }
 }
