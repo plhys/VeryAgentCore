@@ -13,6 +13,7 @@ mod remote_agent;
 mod response;
 mod skill;
 mod system;
+mod team;
 mod websocket;
 
 pub use conversation::{
@@ -93,4 +94,10 @@ pub use channel::{
     PairingRequestResponse, PairingRequestedPayload, PluginStatusChangedPayload,
     PluginStatusResponse, RejectPairingRequest, RevokeUserRequest, SyncChannelSettingsRequest,
     TestPluginExtraConfig, TestPluginRequest, TestPluginResponse, UserAuthorizedPayload,
+};
+pub use team::{
+    AddAgentRequest, CreateTeamRequest, RenameAgentRequest, RenameTeamRequest,
+    SendAgentMessageRequest, SendTeamMessageRequest, TeamAgentInput, TeamAgentRemovedPayload,
+    TeamAgentRenamedPayload, TeamAgentResponse, TeamAgentSpawnedPayload, TeamAgentStatusPayload,
+    TeamListResponse, TeamResponse,
 };
