@@ -40,6 +40,7 @@ use aionui_channel::{ChannelRouterState, channel_routes};
 #[cfg(feature = "weixin")]
 use aionui_channel::weixin_login_route;
 use aionui_team::{TeamRouterState, TeamSessionService, team_routes};
+use aionui_cron::{CronEventEmitter, CronRouterState, cron_routes};
 use aionui_realtime::{
     BroadcastEventBus, NoopMessageRouter, WebSocketManager, WsHandlerState, ws_upgrade_handler,
 };
@@ -198,6 +199,7 @@ pub struct ModuleStates {
     pub skill: SkillRouterState,
     pub channel: ChannelRouterState,
     pub team: TeamRouterState,
+    pub cron: CronRouterState,
 }
 
 /// Build all default `ModuleStates` from application services.
@@ -217,6 +219,7 @@ pub async fn build_module_states(services: &AppServices) -> ModuleStates {
         skill: skill_state,
         channel: build_channel_state(services),
         team: build_team_state(services),
+        cron: build_cron_state(services),
     }
 }
 
@@ -410,6 +413,67 @@ pub fn build_team_state(services: &AppServices) -> TeamRouterState {
     TeamRouterState { service }
 }
 
+/// Build the default `CronRouterState` from application services.
+pub fn build_cron_state(services: &AppServices) -> CronRouterState {
+    let pool = services.database.pool().clone();
+    let cron_repo: Arc<dyn aionui_db::ICronRepository> =
+        Arc::new(aionui_db::SqliteCronRepository::new(pool.clone()));
+
+    let conv_repo: Arc<dyn aionui_db::IConversationRepository> =
+        Arc::new(SqliteConversationRepository::new(pool));
+    let conv_service = Arc::new(ConversationService::new(
+        conv_repo.clone(),
+        services.event_bus.clone(),
+    ));
+
+    let busy_guard = Arc::new(aionui_cron::busy_guard::CronBusyGuard::new());
+    let executor = Arc::new(aionui_cron::executor::JobExecutor::new(
+        services.worker_task_manager.clone(),
+        conv_repo,
+        conv_service,
+        busy_guard,
+    ));
+
+    let tick_service_ref: Arc<CronServiceTickRef> = Arc::new(CronServiceTickRef::default());
+    let tick_ref = tick_service_ref.clone();
+    let scheduler = Arc::new(aionui_cron::scheduler::CronScheduler::new(Arc::new(
+        move |job_id: String| {
+            let svc = tick_ref.0.lock().unwrap().clone();
+            tokio::spawn(async move {
+                if let Some(svc) = svc {
+                    svc.tick(&job_id).await;
+                }
+            });
+        },
+    )));
+
+    let emitter = CronEventEmitter::new(services.event_bus.clone());
+    let cron_service = Arc::new(aionui_cron::service::CronService::new(
+        cron_repo,
+        scheduler,
+        executor,
+        emitter,
+    ));
+
+    tick_service_ref
+        .0
+        .lock()
+        .unwrap()
+        .replace(cron_service.clone());
+
+    CronRouterState { cron_service }
+}
+
+/// Helper to break the circular reference between CronScheduler and CronService.
+///
+/// The scheduler's tick callback needs to call `CronService::tick()`, but
+/// `CronService` owns the scheduler. We use a `Mutex<Option<Arc<CronService>>>`
+/// that gets populated after both are constructed.
+#[derive(Default)]
+struct CronServiceTickRef(
+    std::sync::Mutex<Option<Arc<aionui_cron::service::CronService>>>,
+);
+
 /// Build the default extension-related router states.
 ///
 /// Returns `(ExtensionRouterState, HubRouterState, SkillRouterState)`.
@@ -563,6 +627,10 @@ pub fn create_router_with_all_state(
 
     // Team routes protected by auth middleware
     let team_authenticated = team_routes(states.team)
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
+    // Cron routes protected by auth middleware
+    let cron_authenticated = cron_routes(states.cron)
         .route_layer(from_fn_with_state(auth_mw_state, auth_middleware));
 
     // WebSocket upgrade route — exempt from CSRF (no cookie-based
@@ -586,7 +654,8 @@ pub fn create_router_with_all_state(
         .merge(hub_authenticated)
         .merge(skill_authenticated)
         .merge(channel_authenticated)
-        .merge(team_authenticated);
+        .merge(team_authenticated)
+        .merge(cron_authenticated);
 
     // Conditionally merge WeChat login SSE route (feature-gated)
     #[cfg(feature = "weixin")]
