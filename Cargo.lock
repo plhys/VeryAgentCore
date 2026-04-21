@@ -375,6 +375,10 @@ dependencies = [
  "open",
  "reqwest",
  "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
  "which",
 ]
 
