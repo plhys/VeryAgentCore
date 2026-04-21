@@ -45,6 +45,7 @@ use aionui_office::{
     ConversionService, OfficecliWatchManager, OfficeRouterState, ProxyService, SnapshotService as OfficeSnapshotService,
     StarOfficeDetector, office_proxy_routes, office_routes,
 };
+use aionui_shell::{ShellRouterState, shell_routes};
 use aionui_realtime::{
     BroadcastEventBus, NoopMessageRouter, WebSocketManager, WsHandlerState, ws_upgrade_handler,
 };
@@ -214,6 +215,7 @@ pub struct ModuleStates {
     pub team: TeamRouterState,
     pub cron: CronRouterState,
     pub office: OfficeRouterState,
+    pub shell: ShellRouterState,
 }
 
 /// Build all default `ModuleStates` from application services.
@@ -235,6 +237,7 @@ pub async fn build_module_states(services: &AppServices) -> ModuleStates {
         team: build_team_state(services),
         cron: build_cron_state(services),
         office: build_office_state(services),
+        shell: build_shell_state(services),
     }
 }
 
@@ -504,6 +507,19 @@ pub fn build_office_state(services: &AppServices) -> OfficeRouterState {
     }
 }
 
+/// Build the default `ShellRouterState` from application services.
+pub fn build_shell_state(services: &AppServices) -> ShellRouterState {
+    let pool = services.database.pool().clone();
+    let client_pref_repo = Arc::new(SqliteClientPreferenceRepository::new(pool));
+    let client_pref_service = ClientPrefService::new(client_pref_repo);
+
+    ShellRouterState {
+        shell_service: Arc::new(aionui_shell::ShellService::new()),
+        stt_service: Arc::new(aionui_shell::SttService::new(reqwest::Client::new())),
+        client_pref_service,
+    }
+}
+
 /// Helper to break the circular reference between CronScheduler and CronService.
 ///
 /// The scheduler's tick callback needs to call `CronService::tick()`, but
@@ -675,6 +691,10 @@ pub fn create_router_with_all_state(
 
     // Office routes protected by auth middleware
     let office_authenticated = office_routes(states.office.clone())
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
+    // Shell + STT routes protected by auth middleware
+    let shell_authenticated = shell_routes(states.shell)
         .route_layer(from_fn_with_state(auth_mw_state, auth_middleware));
 
     // Office proxy routes — exempt from auth (serve iframe content)
@@ -703,7 +723,8 @@ pub fn create_router_with_all_state(
         .merge(channel_authenticated)
         .merge(team_authenticated)
         .merge(cron_authenticated)
-        .merge(office_authenticated);
+        .merge(office_authenticated)
+        .merge(shell_authenticated);
 
     // Conditionally merge WeChat login SSE route (feature-gated)
     #[cfg(feature = "weixin")]
