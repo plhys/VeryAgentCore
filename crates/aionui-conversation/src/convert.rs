@@ -37,7 +37,7 @@ pub fn row_to_response_with_extra(
 ) -> Result<ConversationResponse, AppError> {
     let is_temporary_workspace = {
         let ws = extra.get("workspace").and_then(|v| v.as_str()).unwrap_or("");
-        !ws.is_empty() && Path::new(ws).starts_with(data_dir)
+        !ws.is_empty() && (Path::new(ws).starts_with(data_dir) || is_temp_workspace_path(Path::new(ws)))
     };
     if let Some(obj) = extra.as_object_mut() {
         obj.insert(
@@ -70,6 +70,42 @@ pub fn row_to_response_with_extra(
         modified_at: row.updated_at,
         extra,
     })
+}
+
+/// Recognise a path produced by `ConversationService::create`'s
+/// auto-provision branch — `<root>/conversations/<label>-temp-<id>`.
+///
+/// The `data_dir` prefix check above already covers the happy case
+/// (`workspace_root` matches today's runtime). This helper is the
+/// fallback for rows whose `extra.workspace` was written under an
+/// **earlier** `--work-dir` value: the path on disk no longer lives
+/// under the active `workspace_root`, so the prefix check returns
+/// `false` and the renderer would group every old auto-provisioned
+/// session as a custom "project". The `<label>-temp-<short_id>` shape
+/// is stable across versions (see `service::conversation_label` and
+/// `generate_short_id`), so matching it lets old rows keep their
+/// `is_temporary_workspace = true` without any data migration.
+///
+/// `<label>` is one of the ACP vendor strings or the AgentType serde
+/// name; the only structural invariant is "no path separators". We
+/// match on `<…>-temp-<short_id>` case-sensitively and require the
+/// parent directory to be named `conversations`. The short id format
+/// (alphanumeric, no dashes) is intentionally not validated — that
+/// would couple this fallback to `generate_short_id` internals.
+fn is_temp_workspace_path(workspace: &Path) -> bool {
+    let Some(file_name) = workspace.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    let Some(parent) = workspace.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()) else {
+        return false;
+    };
+    if parent != "conversations" {
+        return false;
+    }
+    let Some((label, suffix)) = file_name.split_once("-temp-") else {
+        return false;
+    };
+    !label.is_empty() && !suffix.is_empty()
 }
 
 /// Parse the model JSON column into `ProviderWithModel`.
@@ -393,6 +429,54 @@ mod tests {
             Some("aionui"),
             None,
             r#"{"workspace":"/Users/alice/my-project"}"#,
+        );
+        let resp = row_to_response(row, Path::new("/srv/aionui-data")).unwrap();
+        assert_eq!(resp.extra["is_temporary_workspace"], false);
+    }
+
+    #[test]
+    fn row_to_response_marks_legacy_temp_workspace_as_temporary() {
+        // Row was created when `--work-dir` pointed to an old data_dir; the
+        // operator has since moved to a different work_dir, so the prefix
+        // check fails. The `{label}-temp-{id}` shape under
+        // `…/conversations/` is the fallback signal — see
+        // `is_temp_workspace_path`.
+        let row = make_row(
+            "acp",
+            "pending",
+            Some("aionui"),
+            None,
+            r#"{"workspace":"/Users/old/.aionui-dev/conversations/claude-temp-6888dc3e"}"#,
+        );
+        let resp = row_to_response(row, Path::new("/Users/new/work-dir")).unwrap();
+        assert_eq!(resp.extra["is_temporary_workspace"], true);
+    }
+
+    #[test]
+    fn row_to_response_does_not_match_non_conversations_parent() {
+        // Same `…-temp-…` shape, but parent dir isn't `conversations` →
+        // not auto-provisioned, treat as user-chosen.
+        let row = make_row(
+            "acp",
+            "pending",
+            Some("aionui"),
+            None,
+            r#"{"workspace":"/Users/alice/projects/claude-temp-abc"}"#,
+        );
+        let resp = row_to_response(row, Path::new("/srv/aionui-data")).unwrap();
+        assert_eq!(resp.extra["is_temporary_workspace"], false);
+    }
+
+    #[test]
+    fn row_to_response_does_not_match_without_temp_segment() {
+        // No `-temp-` infix → user-chosen workspace named "conversations"
+        // → must not be flagged as temporary.
+        let row = make_row(
+            "acp",
+            "pending",
+            Some("aionui"),
+            None,
+            r#"{"workspace":"/Users/alice/conversations/my-project"}"#,
         );
         let resp = row_to_response(row, Path::new("/srv/aionui-data")).unwrap();
         assert_eq!(resp.extra["is_temporary_workspace"], false);
