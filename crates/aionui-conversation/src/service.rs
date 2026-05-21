@@ -1191,16 +1191,25 @@ impl ConversationService {
             .filter(|r| r.user_id == user_id)
             .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
 
-        let agent = task_manager
-            .get_task(conversation_id)
-            .ok_or_else(|| AppError::Conflict("No active agent for this conversation".into()))?;
-
-        if let Err(e) = agent.cancel().await {
-            warn!(error = %ErrorChain(&e), "Failed to cancel agent");
-            return Err(e);
+        match task_manager.get_task(conversation_id) {
+            Some(agent) => {
+                if let Err(e) = agent.cancel().await {
+                    warn!(error = %ErrorChain(&e), "Failed to cancel agent");
+                    return Err(e);
+                }
+                info!("Stream canceled");
+            }
+            None => {
+                // No active agent — force-reset DB status if stuck at "running"
+                StreamRelay::complete_conversation(
+                    &self.conversation_repo,
+                    &self.broadcaster,
+                    conversation_id,
+                )
+                .await;
+                info!("No active agent; force-completed conversation status");
+            }
         }
-
-        info!("Stream canceled");
         Ok(())
     }
 
