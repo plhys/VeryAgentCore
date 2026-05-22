@@ -57,9 +57,8 @@ impl CliAgentProcess {
         cmd.args(&config.args)
             .envs(config.env.iter().map(|e| (&e.name, &e.value)))
             .envs(Self::agent_spawn_env(data_dir))
-            .expand_placeholders(&placeholders).map_err(|e| {
-                AppError::Internal(format!("Unknown placeholder in agent command: {e}"))
-            })?;
+            .expand_placeholders(&placeholders)
+            .map_err(|e| AppError::Internal(format!("Unknown placeholder in agent command: {e}")))?;
         // The expand_placeholders call rebuilds the inner Command and resets
         // stdio. Re-apply the SDK-mode stdio config so the rest of this fn
         // can take the handles.
@@ -209,7 +208,9 @@ mod tests {
     async fn spawn_for_sdk_take_stdio() {
         let config = simple_script_config("read line && echo \"$line\"");
         let tmp = std::env::temp_dir();
-        let proc = CliAgentProcess::spawn_for_sdk(config, &tmp, "test-bin", "test-id").await.unwrap();
+        let proc = CliAgentProcess::spawn_for_sdk(config, &tmp, "test-bin", "test-id")
+            .await
+            .unwrap();
 
         let stdio = proc.take_stdio().await;
         assert!(stdio.is_some(), "First take_stdio should succeed");

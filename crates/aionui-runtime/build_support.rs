@@ -177,7 +177,10 @@ mod tests {
 
     #[test]
     fn node_dir_name_format() {
-        assert_eq!(node_dir_name("22.11.0", "abc1234567890def"), "node-22.11.0-abc123456789");
+        assert_eq!(
+            node_dir_name("22.11.0", "abc1234567890def"),
+            "node-22.11.0-abc123456789"
+        );
     }
 
     #[test]

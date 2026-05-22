@@ -234,7 +234,10 @@ pub fn is_node_fresh(dir: &Path, expected_sha: &str, expected_version: &str) -> 
 /// 7. Write `node.stamp`.
 pub fn extract_node_into(dir: &Path, blob: &[u8], expected_sha: &str, version: &str) -> Result<(), ExtractError> {
     let parent = dir.parent().ok_or_else(|| {
-        ExtractError::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, "dir has no parent"))
+        ExtractError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "dir has no parent",
+        ))
     })?;
     fs::create_dir_all(parent)?;
 

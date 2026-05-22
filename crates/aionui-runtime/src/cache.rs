@@ -116,7 +116,10 @@ mod tests {
 
     #[test]
     fn node_dir_name_format() {
-        assert_eq!(node_dir_name("22.11.0", "deadbeefcafebabe"), "node-22.11.0-deadbeefcafe");
+        assert_eq!(
+            node_dir_name("22.11.0", "deadbeefcafebabe"),
+            "node-22.11.0-deadbeefcafe"
+        );
     }
 
     #[test]
