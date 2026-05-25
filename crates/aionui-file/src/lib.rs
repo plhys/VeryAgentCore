@@ -23,8 +23,6 @@ pub use types::{
     SnapshotInfo, SnapshotMode, WorkspaceFlatFile, ZipEntry,
 };
 pub use watch_service::FileWatchService;
-pub use workspace_watcher::{
-    EventDispatcher, GitignoreFilter, SharedWorkspaceWatcher, WorkspaceWatchManager,
-};
+pub use workspace_watcher::{EventDispatcher, GitignoreFilter, SharedWorkspaceWatcher, WorkspaceWatchManager};
 pub use workspace_watcher_registry::SubscriptionRegistry;
 pub use workspace_watcher_router::{WatcherLifecycle, WorkspaceWatchRouter};
