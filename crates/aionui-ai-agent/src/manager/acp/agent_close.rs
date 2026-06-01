@@ -25,6 +25,16 @@ use crate::protocol::error::CloseReason;
 /// covers a tracing event with its preceding context.
 pub(super) const STDERR_PEEK_LINES: usize = 32;
 
+fn acp_internal_payload_display(err: &AppError) -> Option<String> {
+    const ACP_INTERNAL_PREFIX: &str = "Agent internal error (code -32603)";
+    let display = user_facing_message(err);
+    if display.starts_with(ACP_INTERNAL_PREFIX) && display.trim() != ACP_INTERNAL_PREFIX {
+        Some(display)
+    } else {
+        None
+    }
+}
+
 impl AcpAgentManager {
     /// If `err` is the "SDK gave us default Internal error with no data" shape,
     /// peek the child's recent stderr and try to surface a more informative
@@ -79,6 +89,10 @@ impl AcpAgentManager {
     ///    "default Internal error" shape; otherwise the user-facing form
     ///    of the `AppError` is the best we can do.
     pub(super) async fn build_close_reason_from_error(&self, err: &AppError) -> CloseReason {
+        if let Some(display) = acp_internal_payload_display(err) {
+            return CloseReason::Failed { display };
+        }
+
         // Branch 1 — process exit detected.
         if let Some(status) = self.process.exit_status() {
             let (exit_code, signal) = exit_status_parts(Some(status));
@@ -149,6 +163,10 @@ mod tests {
     /// the same extractor module path. Keep this aligned with the production
     /// helper or these tests stop reflecting reality.
     async fn build_close_reason_via_process(proc: &Arc<CliAgentProcess>, err: &AppError) -> CloseReason {
+        if let Some(display) = super::acp_internal_payload_display(err) {
+            return CloseReason::Failed { display };
+        }
+
         if let Some(status) = proc.exit_status() {
             let (exit_code, signal) = exit_status_parts(Some(status));
             let tail = proc.peek_stderr_tail(super::STDERR_PEEK_LINES).await;
@@ -239,6 +257,27 @@ mod tests {
                 assert!(msg.contains("exit code 42"), "got {msg}");
             }
             other => panic!("expected ProcessExited, got {other:?}"),
+        }
+    }
+
+    /// If the SDK gave us a concrete -32603 data payload, prefer that over
+    /// the later process-exit metadata. The exit code is only a fallback when
+    /// the ACP error itself has no useful content.
+    #[tokio::test]
+    async fn internal_error_with_payload_beats_process_exit_summary() {
+        let proc = spawn_with_stderr_and_exit("Saved lockfile", 1).await;
+
+        let err = AppError::BadGateway(
+            "Agent internal error (code -32603) ({\"error\":\"Failed to connect MCP servers\"})".into(),
+        );
+        let reason = build_close_reason_via_process(&proc, &err).await;
+
+        match reason {
+            CloseReason::Failed { display } => {
+                assert!(display.contains("Agent internal error"), "got {display}");
+                assert!(display.contains("Failed to connect MCP servers"), "got {display}");
+            }
+            other => panic!("expected Failed with SDK payload, got {other:?}"),
         }
     }
 

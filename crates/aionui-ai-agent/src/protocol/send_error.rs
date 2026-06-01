@@ -312,7 +312,8 @@ impl From<AcpError> for AgentSendError {
 
 fn classify_upstream_detail(detail: &str) -> AgentSendError {
     let lower = detail.to_ascii_lowercase();
-    let classified = classify_agent_lifecycle(&lower)
+    let classified = classify_agent_internal(&lower)
+        .or_else(|| classify_agent_lifecycle(&lower))
         .or_else(|| classify_provider_api(&lower))
         .or_else(|| classify_aionui_state(&lower))
         .unwrap_or(ClassifiedError {
@@ -326,6 +327,22 @@ fn classify_upstream_detail(detail: &str) -> AgentSendError {
         });
 
     classified.into_send_error(detail.to_owned())
+}
+
+fn classify_agent_internal(lower: &str) -> Option<ClassifiedError> {
+    if lower.contains("agent internal error (code -32603)") {
+        return Some(ClassifiedError {
+            message: "Agent internal error",
+            code: AgentErrorCode::UnknownUpstreamError,
+            ownership: AgentErrorOwnership::UserAgent,
+            retryable: true,
+            feedback_recommended: false,
+            resolution_kind: AgentErrorResolutionKind::Retry,
+            resolution_target: None,
+        });
+    }
+
+    None
 }
 
 fn classify_agent_lifecycle(lower: &str) -> Option<ClassifiedError> {
@@ -975,20 +992,29 @@ mod tests {
     }
 
     #[test]
-    fn classifies_mid_session_cli_exit_as_agent_disconnected() {
-        // Mid-session ACP CLI exit (e.g. Claude Code) surfaces as -32603 with
-        // `details: "Claude Code process exited with code 1"`. Previously this
-        // fell through to UNKNOWN_UPSTREAM_ERROR; it now maps to a retryable
-        // agent disconnect.
+    fn classifies_acp_internal_error_without_hiding_sdk_detail() {
+        // ACP -32603 carries the agent's actual internal-error payload. Even
+        // when that payload mentions a later CLI exit, the user-facing error
+        // should remain "Agent internal error" and keep the SDK detail instead
+        // of collapsing to a plain disconnect/exit-code message.
         assert_classification(
             "Agent internal error (code -32603) ({\"details\":\"Claude Code process exited with code 1\"})",
-            AgentErrorCode::UserAgentDisconnected,
+            AgentErrorCode::UnknownUpstreamError,
             AgentErrorOwnership::UserAgent,
-            AgentErrorResolutionKind::ReconnectAgent,
+            AgentErrorResolutionKind::Retry,
         );
         let err = AgentSendError::from_app_error(AppError::BadGateway(
-            "Agent internal error (code -32603) ({\"details\":\"Claude Code process exited with code 1\"})".into(),
+            "Agent internal error (code -32603) ({\"error\":\"Failed to connect MCP servers: {\\\"obsidian-semantic-vault\\\": \\\"Client failed to connect\\\"}\",\"details\":\"Claude Code process exited with code 1\"})".into(),
         ));
+        assert_eq!(err.stream_error().message, "Agent internal error");
+        assert!(
+            err.stream_error()
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("Failed to connect MCP servers")),
+            "SDK detail must be preserved; got {:?}",
+            err.stream_error().detail
+        );
         assert_eq!(err.stream_error().retryable, Some(true));
         assert_eq!(err.stream_error().feedback_recommended, Some(false));
     }
@@ -1002,13 +1028,13 @@ mod tests {
             AgentErrorResolutionKind::CheckAgentVersion,
         );
         assert_classification(
-            "Agent internal error (code -32603) {\"details\":\"Session not found\"}",
+            "Session not found",
             AgentErrorCode::UserAgentSessionNotFound,
             AgentErrorOwnership::UserAgent,
             AgentErrorResolutionKind::StartNewSession,
         );
         assert_classification(
-            "Bad gateway: Agent internal error (code -32603) {\"details\":\"No previous sessions found for this project\"}",
+            "No previous sessions found for this project",
             AgentErrorCode::UserAgentNoPreviousSession,
             AgentErrorOwnership::UserAgent,
             AgentErrorResolutionKind::StartNewSession,
@@ -1036,7 +1062,7 @@ mod tests {
             AgentErrorResolutionKind::CheckLocalCommand,
         );
         assert_classification(
-            "Agent internal error (code -32603) {\"message\":\"Missing environment variable: 'OMLX API KEY'\"}",
+            "Missing environment variable: 'OMLX API KEY'",
             AgentErrorCode::UserAgentMissingEnv,
             AgentErrorOwnership::UserAgent,
             AgentErrorResolutionKind::CheckAgentInstallation,
