@@ -218,13 +218,13 @@ pub struct ResolvedCommand {
 2. 完整且有效的 system runtime
 3. managed runtime
 
-第一阶段不暴露独立的 `AIONUI_NODE_PATH`、`AIONUI_NPM_PATH`、`AIONUI_NPX_PATH`。
+第一阶段不暴露按单个工具粒度拆分的 override 入口。
 
 如果确实要支持 override，优先提供以下任一形式：
 
-- `AIONUI_NODE_RUNTIME_DIR`
-- `AIONUI_NODE_PATH`，并从其同级目录派生 npm/npx
 - 一个显式描述完整 runtime 的配置对象
+- 一个完整 runtime 根目录的 override
+- 一个 `node` 主入口，再从其所属 runtime 派生 npm/npx
 
 原因：
 
@@ -232,7 +232,7 @@ pub struct ResolvedCommand {
 - 更符合 Zed、JetBrains、Volta 类方案
 - 让诊断结果保持一致
 
-是否支持 per-tool override 以后再看真实产品需求，不作为第一阶段默认设计。
+是否支持 per-tool override 以后再看真实产品需求，不作为第一阶段默认设计，也不应在当前文档中暗示已经存在这类环境变量。
 
 ### 5. managed npm 状态全部落在 `data_dir`
 

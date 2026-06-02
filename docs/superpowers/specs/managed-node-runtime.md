@@ -348,7 +348,7 @@ bun / bunx        -> 显式 bun 场景，是否支持由单独策略决定
 
 `resolve_node_tool(NodeTool::Npx)` 等 API 的优先级：
 
-1. 用户显式 override，例如 `AIONUI_NODE_PATH` / `AIONUI_NPM_PATH` / `AIONUI_NPX_PATH`。
+1. 用户显式 override，例如提供一套完整 runtime，或提供一个可派生完整 runtime 的主入口。
 2. 系统 PATH 中的 `node` / `npm` / `npx`，且完整性和版本校验通过。
 3. AionCore managed Node runtime。
 
