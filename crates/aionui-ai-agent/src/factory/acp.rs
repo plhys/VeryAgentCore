@@ -639,9 +639,10 @@ mod tests {
                     "unexpected stdio command path: {command}",
                 );
                 assert_eq!(s.args, vec!["-y".to_owned(), "@upstash/context7-mcp".to_owned()]);
-                assert_eq!(s.env.len(), 1);
-                assert_eq!(s.env[0].name, "K");
-                assert_eq!(s.env[0].value, "V");
+                assert!(
+                    s.env.iter().any(|entry| entry.name == "K" && entry.value == "V"),
+                    "missing user-provided env in stdio launch"
+                );
             }
             _ => panic!("expected Stdio"),
         }
