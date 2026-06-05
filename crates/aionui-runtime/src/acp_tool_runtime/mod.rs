@@ -1486,8 +1486,10 @@ mod tests {
         }
 
         let error = result.expect_err("bundled validation failure should abort");
-        assert!(error
-            .to_string()
-            .contains("bundled managed Codex ACP artifact failed validation"));
+        assert!(
+            error
+                .to_string()
+                .contains("bundled managed Codex ACP artifact failed validation")
+        );
     }
 }
