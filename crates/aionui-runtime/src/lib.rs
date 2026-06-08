@@ -19,7 +19,7 @@ pub use acp_tool_runtime::{
     ManagedAcpToolError, ManagedAcpToolFailureKind, ManagedAcpToolId, ManagedAcpToolProgress,
     ManagedAcpToolProgressPhase, ManagedAcpToolProgressReporter, ManagedAcpToolSupport, ResolvedManagedAcpTool,
     SharedManagedAcpToolProgressReporter, doctor_snapshot as acp_tool_doctor_snapshot, ensure_managed_acp_tool,
-    ensure_managed_acp_tool_with_reporter, probe_managed_acp_tool_supported,
+    ensure_managed_acp_tool_with_reporter, prepare_managed_acp_tool_to_root, probe_managed_acp_tool_supported,
 };
 pub use cache::init;
 pub use node_runtime::{
