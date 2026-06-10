@@ -11,7 +11,7 @@ use aionui_api_types::{
 };
 use aionui_common::now_ms;
 use aionui_db::{
-    AssistantOverrideRow, AssistantRow, CreateAssistantParams, IAssistantDefinitionRepository,
+    AssistantDefinitionRow, AssistantRow, AssistantStateRow, CreateAssistantParams, IAssistantDefinitionRepository,
     IAssistantOverrideRepository, IAssistantPreferenceRepository, IAssistantRepository, IAssistantStateRepository,
     IProviderRepository, SqlitePool, UpdateAssistantParams, UpsertAssistantDefinitionParams,
     UpsertAssistantStateParams, rebuild_legacy_assistant_mirror,
@@ -22,7 +22,9 @@ use aionui_extension::{
 use serde_json;
 use tracing::{debug, warn};
 
-use crate::builtin::{AvatarAsset, BuiltinAssistant, BuiltinAssistantRegistry};
+use crate::builtin::{AvatarAsset, BuiltinAssistantRegistry};
+#[cfg(test)]
+use crate::builtin::BuiltinAssistant;
 use crate::error::AssistantError;
 
 /// Aggregated business logic for `/api/assistants/*` and rule/skill dispatch.
@@ -294,23 +296,24 @@ impl AssistantService {
     /// override application. Also performs opportunistic orphan cleanup on
     /// the overrides table.
     pub async fn list(&self) -> Result<Vec<AssistantResponse>, AssistantError> {
-        let user_rows = self.repo.list().await?;
+        let definitions = self
+            .definition_repo
+            .list()
+            .await
+            .map_err(|e| AssistantError::Internal(format!("list assistant definitions: {e}")))?;
+        let states = self
+            .state_repo
+            .list()
+            .await
+            .map_err(|e| AssistantError::Internal(format!("list assistant states: {e}")))?;
         let extensions = self.extension_registry.get_assistants().await;
-        let overrides = self.override_repo.get_all().await?;
-
-        let overrides_map: HashMap<String, AssistantOverrideRow> =
-            overrides.into_iter().map(|o| (o.assistant_id.clone(), o)).collect();
+        let state_map: HashMap<String, AssistantStateRow> =
+            states.into_iter().map(|state| (state.assistant_id.clone(), state)).collect();
 
         let mut result = Vec::new();
 
-        for b in self.builtin.all() {
-            result.push(builtin_to_response(b, overrides_map.get(&b.id)));
-        }
-        for u in &user_rows {
-            if self.builtin.has(&u.id) {
-                continue;
-            }
-            result.push(user_row_to_response(u, overrides_map.get(&u.id))?);
+        for definition in &definitions {
+            result.push(definition_to_response(definition, state_map.get(&definition.id))?);
         }
         for e in &extensions {
             result.push(extension_to_response(e));
@@ -334,33 +337,16 @@ impl AssistantService {
     }
 
     pub async fn get(&self, id: &str) -> Result<AssistantResponse, AssistantError> {
-        match self.classify_source(id).await {
-            AssistantSource::Builtin => {
-                let b = self
-                    .builtin
-                    .get(id)
-                    .ok_or_else(|| AssistantError::NotFound(format!("assistant '{id}' not found")))?;
-                let ov = self.override_repo.get(id).await?;
-                Ok(builtin_to_response(b, ov.as_ref()))
-            }
-            AssistantSource::Extension => {
-                let e = self
-                    .extension_registry
-                    .get_assistant_by_id(id)
-                    .await
-                    .ok_or_else(|| AssistantError::NotFound(format!("assistant '{id}' not found")))?;
-                Ok(extension_to_response(&e))
-            }
-            AssistantSource::User => {
-                let row = self
-                    .repo
-                    .get(id)
-                    .await?
-                    .ok_or_else(|| AssistantError::NotFound(format!("assistant '{id}' not found")))?;
-                let ov = self.override_repo.get(id).await?;
-                user_row_to_response(&row, ov.as_ref())
-            }
+        if let Some(definition) = self.definition_repo.get(id).await? {
+            let state = self.state_repo.get(id).await?;
+            return definition_to_response(&definition, state.as_ref());
         }
+
+        if let Some(assistant) = self.extension_registry.get_assistant_by_id(id).await {
+            return Ok(extension_to_response(&assistant));
+        }
+
+        Err(AssistantError::NotFound(format!("assistant '{id}' not found")))
     }
 
     // -----------------------------------------------------------------------
@@ -455,8 +441,7 @@ impl AssistantService {
 
         let row = self.repo.create(&params).await?;
         self.upsert_definition_from_legacy_user_row(&row).await?;
-        let ov = self.override_repo.get(&id).await?;
-        user_row_to_response(&row, ov.as_ref())
+        self.get(&id).await
     }
 
     pub async fn update(&self, id: &str, req: UpdateAssistantRequest) -> Result<AssistantResponse, AssistantError> {
@@ -544,8 +529,7 @@ impl AssistantService {
             .await?
             .ok_or_else(|| AssistantError::NotFound(format!("assistant '{id}' not found")))?;
         self.upsert_definition_from_legacy_user_row(&row).await?;
-        let ov = self.override_repo.get(id).await?;
-        user_row_to_response(&row, ov.as_ref())
+        self.get(id).await
     }
 
     pub async fn delete(&self, id: &str) -> Result<(), AssistantError> {
@@ -1037,56 +1021,45 @@ fn assistant_error_to_extension_error(error: AssistantError) -> ExtensionError {
 /// configured providers and returns a more specific default when possible.
 const DEFAULT_AGENT_TYPE: &str = "aionrs";
 
-fn builtin_to_response(b: &BuiltinAssistant, ov: Option<&AssistantOverrideRow>) -> AssistantResponse {
-    AssistantResponse {
-        id: b.id.clone(),
-        source: AssistantSource::Builtin,
-        name: b.name.clone(),
-        name_i18n: b.name_i18n.clone(),
-        description: b.description.clone(),
-        description_i18n: b.description_i18n.clone(),
-        avatar: b.avatar.clone(),
-        enabled: ov.map(|o| o.enabled).unwrap_or(true),
-        sort_order: ov.map(|o| o.sort_order).unwrap_or(0),
-        preset_agent_type: ov
-            .and_then(|o| o.preset_agent_type.clone())
-            .unwrap_or_else(|| b.preset_agent_type.clone()),
-        enabled_skills: b.enabled_skills.clone(),
-        custom_skill_names: b.custom_skill_names.clone(),
-        disabled_builtin_skills: b.disabled_builtin_skills.clone(),
-        context: None,
-        context_i18n: HashMap::new(),
-        prompts: b.prompts.clone(),
-        prompts_i18n: b.prompts_i18n.clone(),
-        models: b.models.clone(),
-        last_used_at: ov.and_then(|o| o.last_used_at),
-    }
-}
-
-fn user_row_to_response(
-    row: &AssistantRow,
-    ov: Option<&AssistantOverrideRow>,
+fn definition_to_response(
+    definition: &AssistantDefinitionRow,
+    state: Option<&AssistantStateRow>,
 ) -> Result<AssistantResponse, AssistantError> {
+    let source = match definition.source.as_str() {
+        "builtin" => AssistantSource::Builtin,
+        "extension" => AssistantSource::Extension,
+        _ => AssistantSource::User,
+    };
+    let models = match (
+        definition.default_model_mode.as_str(),
+        definition.default_model_value.as_deref(),
+    ) {
+        ("fixed", Some(model)) => vec![model.to_string()],
+        _ => Vec::new(),
+    };
+
     Ok(AssistantResponse {
-        id: row.id.clone(),
-        source: AssistantSource::User,
-        name: row.name.clone(),
-        name_i18n: decode_str_map(row.name_i18n.as_deref())?,
-        description: row.description.clone(),
-        description_i18n: decode_str_map(row.description_i18n.as_deref())?,
-        avatar: row.avatar.clone(),
-        enabled: ov.map(|o| o.enabled).unwrap_or(true),
-        sort_order: ov.map(|o| o.sort_order).unwrap_or(0),
-        preset_agent_type: row.preset_agent_type.clone(),
-        enabled_skills: decode_str_list(row.enabled_skills.as_deref())?,
-        custom_skill_names: decode_str_list(row.custom_skill_names.as_deref())?,
-        disabled_builtin_skills: decode_str_list(row.disabled_builtin_skills.as_deref())?,
+        id: definition.id.clone(),
+        source,
+        name: definition.name.clone(),
+        name_i18n: decode_str_map(Some(definition.name_i18n.as_str()))?,
+        description: definition.description.clone(),
+        description_i18n: decode_str_map(Some(definition.description_i18n.as_str()))?,
+        avatar: definition.avatar.clone(),
+        enabled: state.is_none_or(|row| row.enabled),
+        sort_order: state.map(|row| row.sort_order).unwrap_or(0),
+        preset_agent_type: state
+            .and_then(|row| row.agent_backend_override.clone())
+            .unwrap_or_else(|| definition.agent_backend.clone()),
+        enabled_skills: decode_str_list(Some(definition.default_skill_ids.as_str()))?,
+        custom_skill_names: decode_str_list(Some(definition.custom_skill_names.as_str()))?,
+        disabled_builtin_skills: decode_str_list(Some(definition.default_disabled_builtin_skill_ids.as_str()))?,
         context: None,
         context_i18n: HashMap::new(),
-        prompts: decode_str_list(row.prompts.as_deref())?,
-        prompts_i18n: decode_list_map(row.prompts_i18n.as_deref())?,
-        models: decode_str_list(row.models.as_deref())?,
-        last_used_at: ov.and_then(|o| o.last_used_at),
+        prompts: decode_str_list(Some(definition.recommended_prompts.as_str()))?,
+        prompts_i18n: decode_list_map(Some(definition.recommended_prompts_i18n.as_str()))?,
+        models,
+        last_used_at: state.and_then(|row| row.last_used_at),
     })
 }
 
