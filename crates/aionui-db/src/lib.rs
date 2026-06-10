@@ -11,8 +11,10 @@ pub use database::{
 };
 pub use error::DbError;
 pub use models::{
-    AgentMetadataRow, AssistantOverrideRow, AssistantRow, ConversationArtifactRow, CreateAssistantParams,
-    UpdateAgentHandshakeParams, UpdateAssistantParams, UpsertAgentMetadataParams, UpsertOverrideParams,
+    AgentMetadataRow, AssistantDefinitionRow, AssistantOverrideRow, AssistantPreferenceRow, AssistantRow,
+    AssistantStateRow, ConversationArtifactRow, CreateAssistantParams, UpdateAgentHandshakeParams,
+    UpdateAssistantParams, UpsertAgentMetadataParams, UpsertAssistantDefinitionParams,
+    UpsertAssistantPreferenceParams, UpsertAssistantStateParams, UpsertOverrideParams,
 };
 pub use repository::channel::UpdatePluginStatusParams;
 pub use repository::conversation::{
@@ -25,14 +27,17 @@ pub use repository::provider::{CreateProviderParams, UpdateProviderParams};
 pub use repository::remote_agent::{CreateRemoteAgentParams, UpdateRemoteAgentParams};
 pub use repository::team::{UpdateTaskParams, UpdateTeamParams};
 pub use repository::{
-    CreateAcpSessionParams, IAcpSessionRepository, IAgentMetadataRepository, IAssistantOverrideRepository,
-    IAssistantRepository, IChannelRepository, IClientPreferenceRepository, IConversationRepository, ICronRepository,
-    IMcpServerRepository, IOAuthTokenRepository, IProviderRepository, IRemoteAgentRepository, ISettingsRepository,
-    ITeamRepository, IUserRepository, PersistedSessionState, SaveRuntimeStateParams, SqliteAcpSessionRepository,
-    SqliteAgentMetadataRepository, SqliteAssistantOverrideRepository, SqliteAssistantRepository,
-    SqliteChannelRepository, SqliteClientPreferenceRepository, SqliteConversationRepository, SqliteCronRepository,
-    SqliteMcpServerRepository, SqliteOAuthTokenRepository, SqliteProviderRepository, SqliteRemoteAgentRepository,
-    SqliteSettingsRepository, SqliteTeamRepository, SqliteUserRepository,
+    CreateAcpSessionParams, IAcpSessionRepository, IAgentMetadataRepository, IAssistantDefinitionRepository,
+    IAssistantOverrideRepository, IAssistantPreferenceRepository, IAssistantRepository, IAssistantStateRepository,
+    IChannelRepository, IClientPreferenceRepository, IConversationRepository, ICronRepository,
+    IMcpServerRepository, IOAuthTokenRepository, IProviderRepository, IRemoteAgentRepository,
+    ISettingsRepository, ITeamRepository, IUserRepository, PersistedSessionState, SaveRuntimeStateParams,
+    SqliteAcpSessionRepository, SqliteAgentMetadataRepository, SqliteAssistantDefinitionRepository,
+    SqliteAssistantOverrideRepository, SqliteAssistantPreferenceRepository, SqliteAssistantRepository,
+    SqliteAssistantStateRepository, SqliteChannelRepository, SqliteClientPreferenceRepository,
+    SqliteConversationRepository, SqliteCronRepository, SqliteMcpServerRepository, SqliteOAuthTokenRepository,
+    SqliteProviderRepository, SqliteRemoteAgentRepository, SqliteSettingsRepository, SqliteTeamRepository,
+    SqliteUserRepository, rebuild_legacy_assistant_mirror,
 };
 
 // Re-export sqlx pool type for downstream crates

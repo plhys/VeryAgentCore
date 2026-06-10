@@ -2,7 +2,9 @@
 
 use crate::error::DbError;
 use crate::models::{
-    AssistantOverrideRow, AssistantRow, CreateAssistantParams, UpdateAssistantParams, UpsertOverrideParams,
+    AssistantDefinitionRow, AssistantOverrideRow, AssistantPreferenceRow, AssistantRow, AssistantStateRow,
+    CreateAssistantParams, UpdateAssistantParams, UpsertAssistantDefinitionParams,
+    UpsertAssistantPreferenceParams, UpsertAssistantStateParams, UpsertOverrideParams,
 };
 
 /// CRUD access for user-authored assistant rows.
@@ -52,4 +54,36 @@ pub trait IAssistantOverrideRepository: Send + Sync {
     /// Remove override rows whose `assistant_id` is not in `valid_ids`.
     /// Returns the number of rows deleted.
     async fn delete_orphans(&self, valid_ids: &[&str]) -> Result<u64, DbError>;
+}
+
+/// Runtime assistant definitions across builtin / user / generated / extension sources.
+#[async_trait::async_trait]
+pub trait IAssistantDefinitionRepository: Send + Sync {
+    async fn list(&self) -> Result<Vec<AssistantDefinitionRow>, DbError>;
+    async fn get(&self, id: &str) -> Result<Option<AssistantDefinitionRow>, DbError>;
+    async fn upsert(
+        &self,
+        params: &UpsertAssistantDefinitionParams<'_>,
+    ) -> Result<AssistantDefinitionRow, DbError>;
+    async fn soft_delete(&self, id: &str, deleted_at: i64) -> Result<bool, DbError>;
+}
+
+/// Runtime assistant state used by the current app version.
+#[async_trait::async_trait]
+pub trait IAssistantStateRepository: Send + Sync {
+    async fn get(&self, assistant_id: &str) -> Result<Option<AssistantStateRow>, DbError>;
+    async fn list(&self) -> Result<Vec<AssistantStateRow>, DbError>;
+    async fn upsert(&self, params: &UpsertAssistantStateParams<'_>) -> Result<AssistantStateRow, DbError>;
+    async fn delete(&self, assistant_id: &str) -> Result<bool, DbError>;
+}
+
+/// Assistant-scoped "auto remember last" preferences.
+#[async_trait::async_trait]
+pub trait IAssistantPreferenceRepository: Send + Sync {
+    async fn get(&self, assistant_id: &str) -> Result<Option<AssistantPreferenceRow>, DbError>;
+    async fn upsert(
+        &self,
+        params: &UpsertAssistantPreferenceParams<'_>,
+    ) -> Result<AssistantPreferenceRow, DbError>;
+    async fn delete(&self, assistant_id: &str) -> Result<bool, DbError>;
 }
