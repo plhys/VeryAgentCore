@@ -1019,9 +1019,9 @@ async fn rebuild_legacy_assistant_unification_schema(pool: &SqlitePool) -> Resul
         .bind(&row.26)
         .bind(&row.27)
         .bind(&row.28)
-        .bind(&row.29)
-        .bind(&row.30)
-        .bind(&row.31)
+        .bind(row.29)
+        .bind(row.30)
+        .bind(row.31)
         .execute(&mut *tx)
         .await
         .map_err(DbError::Query)?;
