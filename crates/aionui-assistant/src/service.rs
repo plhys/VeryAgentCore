@@ -11,8 +11,10 @@ use aionui_api_types::{
 };
 use aionui_common::now_ms;
 use aionui_db::{
-    AssistantOverrideRow, AssistantRow, CreateAssistantParams, IAssistantOverrideRepository, IAssistantRepository,
-    IProviderRepository, UpdateAssistantParams, UpsertOverrideParams,
+    AssistantOverrideRow, AssistantRow, CreateAssistantParams, IAssistantDefinitionRepository,
+    IAssistantOverrideRepository, IAssistantPreferenceRepository, IAssistantRepository, IAssistantStateRepository,
+    IProviderRepository, SqlitePool, UpdateAssistantParams, UpsertAssistantDefinitionParams,
+    UpsertAssistantStateParams, UpsertOverrideParams, rebuild_legacy_assistant_mirror,
 };
 use aionui_extension::{
     AssistantClassifier, AssistantRuleDispatcher, ExtensionError, ExtensionRegistry, ResolvedAssistant,
@@ -25,6 +27,10 @@ use crate::error::AssistantError;
 
 /// Aggregated business logic for `/api/assistants/*` and rule/skill dispatch.
 pub struct AssistantService {
+    pool: SqlitePool,
+    definition_repo: Arc<dyn IAssistantDefinitionRepository>,
+    state_repo: Arc<dyn IAssistantStateRepository>,
+    _preference_repo: Arc<dyn IAssistantPreferenceRepository>,
     repo: Arc<dyn IAssistantRepository>,
     override_repo: Arc<dyn IAssistantOverrideRepository>,
     /// Used to infer a sane `preset_agent_type` default when the caller did
@@ -56,6 +62,10 @@ impl AssistantService {
     /// resulting in `read_rule` returning empty in dev mode. Forcing the
     /// caller to pass a path makes the wiring explicit.
     pub fn new(
+        pool: SqlitePool,
+        definition_repo: Arc<dyn IAssistantDefinitionRepository>,
+        state_repo: Arc<dyn IAssistantStateRepository>,
+        preference_repo: Arc<dyn IAssistantPreferenceRepository>,
         repo: Arc<dyn IAssistantRepository>,
         override_repo: Arc<dyn IAssistantOverrideRepository>,
         provider_repo: Arc<dyn IProviderRepository>,
@@ -64,6 +74,10 @@ impl AssistantService {
         user_data_dir: PathBuf,
     ) -> Self {
         Self {
+            pool,
+            definition_repo,
+            state_repo,
+            _preference_repo: preference_repo,
             repo,
             override_repo,
             provider_repo,
@@ -71,6 +85,186 @@ impl AssistantService {
             extension_registry,
             user_data_dir,
         }
+    }
+
+    /// Bootstrap unified assistant storage from builtin assets and the
+    /// legacy mirror tables.
+    pub async fn bootstrap_assistant_storage(&self) -> Result<(), AssistantError> {
+        self.materialize_builtin_definitions().await?;
+        self.sync_legacy_user_assistants_to_new_tables().await?;
+        self.sync_legacy_overrides_to_new_states().await?;
+        self.rebuild_legacy_mirror_from_new_tables().await?;
+        Ok(())
+    }
+
+    /// Materialize builtin assistants into `assistant_definitions`.
+    pub async fn materialize_builtin_definitions(&self) -> Result<(), AssistantError> {
+        for builtin in self.builtin.all() {
+            let recommended_prompts = serde_json::to_string(&builtin.prompts)
+                .map_err(|e| AssistantError::Internal(format!("encode builtin prompts: {e}")))?;
+            let recommended_prompts_i18n = serde_json::to_string(&builtin.prompts_i18n)
+                .map_err(|e| AssistantError::Internal(format!("encode builtin prompts i18n: {e}")))?;
+            let name_i18n = serde_json::to_string(&builtin.name_i18n)
+                .map_err(|e| AssistantError::Internal(format!("encode builtin name_i18n: {e}")))?;
+            let description_i18n = serde_json::to_string(&builtin.description_i18n)
+                .map_err(|e| AssistantError::Internal(format!("encode builtin description_i18n: {e}")))?;
+            let default_skill_ids = serde_json::to_string(&builtin.enabled_skills)
+                .map_err(|e| AssistantError::Internal(format!("encode builtin skills: {e}")))?;
+            let custom_skill_names = serde_json::to_string(&builtin.custom_skill_names)
+                .map_err(|e| AssistantError::Internal(format!("encode builtin custom skills: {e}")))?;
+            let default_disabled_builtin_skill_ids =
+                serde_json::to_string(&builtin.disabled_builtin_skills).map_err(|e| {
+                    AssistantError::Internal(format!("encode builtin disabled skills: {e}"))
+                })?;
+
+            self.definition_repo
+                .upsert(&UpsertAssistantDefinitionParams {
+                    id: &builtin.id,
+                    source: "builtin",
+                    owner_type: "system",
+                    source_ref: Some(&builtin.id),
+                    source_version: None,
+                    source_hash: None,
+                    name: &builtin.name,
+                    name_i18n: &name_i18n,
+                    description: builtin.description.as_deref(),
+                    description_i18n: &description_i18n,
+                    avatar: builtin.avatar.as_deref(),
+                    agent_backend: &builtin.preset_agent_type,
+                    rule_resource_type: if builtin.rule_file.is_some() {
+                        "builtin_asset"
+                    } else {
+                        "none"
+                    },
+                    rule_resource_ref: builtin.rule_file.as_deref(),
+                    rule_inline_content: None,
+                    recommended_prompts: &recommended_prompts,
+                    recommended_prompts_i18n: &recommended_prompts_i18n,
+                    default_model_mode: "auto",
+                    default_model_value: None,
+                    default_permission_mode: "auto",
+                    default_permission_value: None,
+                    default_skills_mode: "fixed",
+                    default_skill_ids: &default_skill_ids,
+                    custom_skill_names: &custom_skill_names,
+                    default_disabled_builtin_skill_ids: &default_disabled_builtin_skill_ids,
+                    default_mcps_mode: "auto",
+                    default_mcp_ids: "[]",
+                })
+                .await
+                .map_err(|e| AssistantError::Internal(format!("upsert builtin definition: {e}")))?;
+        }
+
+        Ok(())
+    }
+
+    async fn sync_legacy_user_assistants_to_new_tables(&self) -> Result<(), AssistantError> {
+        for row in self.repo.list().await? {
+            self.upsert_definition_from_legacy_user_row(&row).await?;
+        }
+        Ok(())
+    }
+
+    async fn sync_legacy_overrides_to_new_states(&self) -> Result<(), AssistantError> {
+        for override_row in self.override_repo.get_all().await? {
+            if self.definition_repo.get(&override_row.assistant_id).await?.is_none() {
+                warn!(
+                    assistant_id = %override_row.assistant_id,
+                    "skip syncing assistant override without unified definition"
+                );
+                continue;
+            }
+
+            self.state_repo
+                .upsert(&UpsertAssistantStateParams {
+                    assistant_id: &override_row.assistant_id,
+                    enabled: override_row.enabled,
+                    sort_order: override_row.sort_order,
+                    last_used_at: override_row.last_used_at,
+                })
+                .await
+                .map_err(|e| AssistantError::Internal(format!("upsert assistant state: {e}")))?;
+        }
+
+        Ok(())
+    }
+
+    async fn upsert_definition_from_legacy_user_row(&self, row: &AssistantRow) -> Result<(), AssistantError> {
+        let name_i18n = normalize_json_object_string(row.name_i18n.as_deref(), "name_i18n")?;
+        let description_i18n =
+            normalize_json_object_string(row.description_i18n.as_deref(), "description_i18n")?;
+        let recommended_prompts = normalize_json_array_string(row.prompts.as_deref(), "prompts")?;
+        let recommended_prompts_i18n =
+            normalize_json_map_of_arrays_string(row.prompts_i18n.as_deref(), "prompts_i18n")?;
+        let default_skill_ids = normalize_json_array_string(row.enabled_skills.as_deref(), "enabled_skills")?;
+        let custom_skill_names =
+            normalize_json_array_string(row.custom_skill_names.as_deref(), "custom_skill_names")?;
+        let default_disabled_builtin_skill_ids =
+            normalize_json_array_string(row.disabled_builtin_skills.as_deref(), "disabled_builtin_skills")?;
+        let models = decode_str_list(row.models.as_deref())?;
+        let (default_model_mode, default_model_value) = match models.first() {
+            Some(model) => ("fixed", Some(model.as_str())),
+            None => ("auto", None),
+        };
+
+        self.definition_repo
+            .upsert(&UpsertAssistantDefinitionParams {
+                id: &row.id,
+                source: "user",
+                owner_type: "user",
+                source_ref: Some(&row.id),
+                source_version: None,
+                source_hash: None,
+                name: &row.name,
+                name_i18n: &name_i18n,
+                description: row.description.as_deref(),
+                description_i18n: &description_i18n,
+                avatar: row.avatar.as_deref(),
+                agent_backend: &row.preset_agent_type,
+                rule_resource_type: "user_file",
+                rule_resource_ref: Some(&row.id),
+                rule_inline_content: None,
+                recommended_prompts: &recommended_prompts,
+                recommended_prompts_i18n: &recommended_prompts_i18n,
+                default_model_mode,
+                default_model_value,
+                default_permission_mode: "auto",
+                default_permission_value: None,
+                default_skills_mode: "fixed",
+                default_skill_ids: &default_skill_ids,
+                custom_skill_names: &custom_skill_names,
+                default_disabled_builtin_skill_ids: &default_disabled_builtin_skill_ids,
+                default_mcps_mode: "auto",
+                default_mcp_ids: "[]",
+            })
+            .await
+            .map_err(|e| AssistantError::Internal(format!("upsert user definition: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Rebuild downgrade-compatibility mirror rows from the new assistant tables.
+    pub async fn rebuild_legacy_mirror_from_new_tables(&self) -> Result<(), AssistantError> {
+        let states = self
+            .state_repo
+            .list()
+            .await
+            .map_err(|e| AssistantError::Internal(format!("list assistant states: {e}")))?;
+        let state_map: HashMap<String, aionui_db::AssistantStateRow> =
+            states.into_iter().map(|state| (state.assistant_id.clone(), state)).collect();
+
+        for definition in self
+            .definition_repo
+            .list()
+            .await
+            .map_err(|e| AssistantError::Internal(format!("list assistant definitions: {e}")))?
+        {
+            rebuild_legacy_assistant_mirror(&self.pool, &definition, state_map.get(&definition.id))
+                .await
+                .map_err(|e| AssistantError::Internal(format!("rebuild legacy mirror: {e}")))?;
+        }
+
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -109,6 +303,9 @@ impl AssistantService {
             result.push(builtin_to_response(b, overrides_map.get(&b.id)));
         }
         for u in &user_rows {
+            if self.builtin.has(&u.id) {
+                continue;
+            }
             result.push(user_row_to_response(u, overrides_map.get(&u.id))?);
         }
         for e in &extensions {
@@ -966,6 +1163,21 @@ fn decode_list_map(raw: Option<&str>) -> Result<HashMap<String, Vec<String>>, As
     }
 }
 
+fn normalize_json_array_string(raw: Option<&str>, field: &str) -> Result<String, AssistantError> {
+    serde_json::to_string(&decode_str_list(raw)?)
+        .map_err(|e| AssistantError::Internal(format!("encode {field}: {e}")))
+}
+
+fn normalize_json_object_string(raw: Option<&str>, field: &str) -> Result<String, AssistantError> {
+    serde_json::to_string(&decode_str_map(raw)?)
+        .map_err(|e| AssistantError::Internal(format!("encode {field}: {e}")))
+}
+
+fn normalize_json_map_of_arrays_string(raw: Option<&str>, field: &str) -> Result<String, AssistantError> {
+    serde_json::to_string(&decode_list_map(raw)?)
+        .map_err(|e| AssistantError::Internal(format!("encode {field}: {e}")))
+}
+
 // ---------------------------------------------------------------------------
 // Filesystem helpers
 // ---------------------------------------------------------------------------
@@ -1049,8 +1261,9 @@ pub fn generate_user_id() -> String {
 mod tests {
     use super::*;
     use aionui_db::{
-        CreateProviderParams, SqliteAssistantOverrideRepository, SqliteAssistantRepository, SqliteProviderRepository,
-        init_database_memory,
+        CreateProviderParams, SqliteAssistantDefinitionRepository, SqliteAssistantOverrideRepository,
+        SqliteAssistantPreferenceRepository, SqliteAssistantRepository, SqliteAssistantStateRepository,
+        SqliteProviderRepository, init_database_memory,
     };
     use aionui_extension::ExtensionStateStore;
     use aionui_realtime::BroadcastEventBus;
@@ -1058,6 +1271,8 @@ mod tests {
 
     struct Fixture {
         service: AssistantService,
+        definition_repo: Arc<dyn IAssistantDefinitionRepository>,
+        state_repo: Arc<dyn IAssistantStateRepository>,
         provider_repo: Arc<dyn IProviderRepository>,
         _tmp: TempDir,
         _db: aionui_db::Database,
@@ -1094,6 +1309,12 @@ mod tests {
     async fn fixture_with_options(opts: FixtureOpts) -> Fixture {
         let tmp = TempDir::new().unwrap();
         let db = init_database_memory().await.unwrap();
+        let definition_repo: Arc<dyn IAssistantDefinitionRepository> =
+            Arc::new(SqliteAssistantDefinitionRepository::new(db.pool().clone()));
+        let state_repo: Arc<dyn IAssistantStateRepository> =
+            Arc::new(SqliteAssistantStateRepository::new(db.pool().clone()));
+        let preference_repo: Arc<dyn IAssistantPreferenceRepository> =
+            Arc::new(SqliteAssistantPreferenceRepository::new(db.pool().clone()));
         let repo: Arc<dyn IAssistantRepository> = Arc::new(SqliteAssistantRepository::new(db.pool().clone()));
         let orepo: Arc<dyn IAssistantOverrideRepository> =
             Arc::new(SqliteAssistantOverrideRepository::new(db.pool().clone()));
@@ -1134,6 +1355,10 @@ mod tests {
         let extension_registry = ExtensionRegistry::new(ext_state_store, event_bus, "1.0.0".to_string());
 
         let service = AssistantService::new(
+            db.pool().clone(),
+            definition_repo.clone(),
+            state_repo.clone(),
+            preference_repo,
             repo,
             orepo,
             provider_repo.clone(),
@@ -1144,6 +1369,8 @@ mod tests {
 
         Fixture {
             service,
+            definition_repo,
+            state_repo,
             provider_repo,
             _tmp: tmp,
             _db: db,
@@ -1217,6 +1444,42 @@ mod tests {
         assert_eq!(list.len(), 2);
         assert!(list.iter().any(|a| a.id == "builtin-office"));
         assert!(list.iter().any(|a| a.id == "u1"));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_materializes_builtin_and_syncs_legacy_rows() {
+        let fx = fixture_with_builtins(vec![mk_builtin("builtin-office", "Office")]).await;
+
+        fx.service
+            .create(CreateAssistantRequest {
+                id: Some("u1".into()),
+                name: "Mine".into(),
+                ..req_default()
+            })
+            .await
+            .unwrap();
+        fx.service
+            .set_state(
+                "builtin-office",
+                SetAssistantStateRequest {
+                    enabled: Some(false),
+                    sort_order: Some(9),
+                    last_used_at: Some(1234),
+                },
+            )
+            .await
+            .unwrap();
+
+        fx.service.bootstrap_assistant_storage().await.unwrap();
+
+        let builtin = fx.definition_repo.get("builtin-office").await.unwrap().unwrap();
+        assert_eq!(builtin.source, "builtin");
+        let user = fx.definition_repo.get("u1").await.unwrap().unwrap();
+        assert_eq!(user.source, "user");
+        let builtin_state = fx.state_repo.get("builtin-office").await.unwrap().unwrap();
+        assert!(!builtin_state.enabled);
+        assert_eq!(builtin_state.sort_order, 9);
+        assert_eq!(builtin_state.last_used_at, Some(1234));
     }
 
     #[tokio::test]
@@ -1576,6 +1839,12 @@ mod tests {
         .unwrap();
         let builtin_reg = Arc::new(BuiltinAssistantRegistry::load_from_dir(assets_dir));
 
+        let definition_repo: Arc<dyn IAssistantDefinitionRepository> =
+            Arc::new(SqliteAssistantDefinitionRepository::new(db.pool().clone()));
+        let state_repo: Arc<dyn IAssistantStateRepository> =
+            Arc::new(SqliteAssistantStateRepository::new(db.pool().clone()));
+        let preference_repo: Arc<dyn IAssistantPreferenceRepository> =
+            Arc::new(SqliteAssistantPreferenceRepository::new(db.pool().clone()));
         let repo: Arc<dyn IAssistantRepository> = Arc::new(SqliteAssistantRepository::new(db.pool().clone()));
         let orepo: Arc<dyn IAssistantOverrideRepository> =
             Arc::new(SqliteAssistantOverrideRepository::new(db.pool().clone()));
@@ -1585,6 +1854,10 @@ mod tests {
         let extension_registry = ExtensionRegistry::new(ext_state_store, event_bus, "1.0.0".to_string());
 
         let service = AssistantService::new(
+            db.pool().clone(),
+            definition_repo,
+            state_repo,
+            preference_repo,
             repo,
             orepo,
             provider_repo,

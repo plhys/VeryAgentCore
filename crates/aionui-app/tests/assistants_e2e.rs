@@ -16,8 +16,10 @@ use std::sync::Arc;
 use aionui_app::{AppConfig, AppServices, ModuleStates, build_module_states, create_router_with_states};
 use aionui_assistant::{AssistantRouterState, AssistantService, BuiltinAssistantRegistry};
 use aionui_db::{
-    IAssistantOverrideRepository, IAssistantRepository, IProviderRepository, SqliteAssistantOverrideRepository,
-    SqliteAssistantRepository, SqliteProviderRepository, init_database_memory,
+    IAssistantDefinitionRepository, IAssistantOverrideRepository, IAssistantPreferenceRepository,
+    IAssistantRepository, IAssistantStateRepository, IProviderRepository, SqliteAssistantDefinitionRepository,
+    SqliteAssistantOverrideRepository, SqliteAssistantPreferenceRepository, SqliteAssistantRepository,
+    SqliteAssistantStateRepository, SqliteProviderRepository, init_database_memory,
 };
 use aionui_extension::{
     AssistantRuleDispatcher, ExtensionRegistry, ExtensionRouterState, ExtensionSource, ExtensionStateStore,
@@ -132,6 +134,18 @@ async fn fixture() -> Fixture {
     let db = init_database_memory().await.unwrap();
     let services = AppServices::from_config(db, &AppConfig::default()).await.unwrap();
     let (mut states, _): (ModuleStates, _) = build_module_states(&services).await.expect("build module states");
+    for table in [
+        "assistant_preferences",
+        "assistant_states",
+        "assistant_definitions",
+        "assistant_overrides",
+        "assistants",
+    ] {
+        sqlx::query(&format!("DELETE FROM {table}"))
+            .execute(services.database.pool())
+            .await
+            .unwrap();
+    }
 
     // Replace the extension + hub + skill states with freshly-constructed
     // ones rooted at our temp dirs. The defaults built by
@@ -181,10 +195,15 @@ async fn fixture() -> Fixture {
     // registry (pointing at $exe_dir/assets or dev fallback) and uses
     // `~/.aionui/` for user data — neither is appropriate for tests.
     let pool = services.database.pool().clone();
+    let definition_repo: Arc<dyn IAssistantDefinitionRepository> =
+        Arc::new(SqliteAssistantDefinitionRepository::new(pool.clone()));
+    let state_repo: Arc<dyn IAssistantStateRepository> = Arc::new(SqliteAssistantStateRepository::new(pool.clone()));
+    let preference_repo: Arc<dyn IAssistantPreferenceRepository> =
+        Arc::new(SqliteAssistantPreferenceRepository::new(pool.clone()));
     let repo: Arc<dyn IAssistantRepository> = Arc::new(SqliteAssistantRepository::new(pool.clone()));
     let override_repo: Arc<dyn IAssistantOverrideRepository> =
         Arc::new(SqliteAssistantOverrideRepository::new(pool.clone()));
-    let provider_repo: Arc<dyn IProviderRepository> = Arc::new(SqliteProviderRepository::new(pool));
+    let provider_repo: Arc<dyn IProviderRepository> = Arc::new(SqliteProviderRepository::new(pool.clone()));
     // Seed an OpenAI-compatible provider so create / import calls without
     // an explicit `preset_agent_type` resolve to `"aionrs"` instead of
     // erroring out — mirroring a configured production setup.
@@ -209,6 +228,10 @@ async fn fixture() -> Fixture {
         .expect("seed provider");
     let builtin = Arc::new(BuiltinAssistantRegistry::load_from_dir(builtin_assets_dir.clone()));
     let service = Arc::new(AssistantService::new(
+        pool,
+        definition_repo,
+        state_repo,
+        preference_repo,
         repo,
         override_repo,
         provider_repo,
@@ -216,6 +239,7 @@ async fn fixture() -> Fixture {
         registry,
         user_data_dir.clone(),
     ));
+    service.bootstrap_assistant_storage().await.unwrap();
     states.assistant = AssistantRouterState {
         service: service.clone(),
     };

@@ -398,10 +398,10 @@ impl IAssistantDefinitionRepository for SqliteAssistantDefinitionRepository {
                 recommended_prompts, recommended_prompts_i18n,
                 default_model_mode, default_model_value,
                 default_permission_mode, default_permission_value,
-                default_skills_mode, default_skill_ids, default_disabled_builtin_skill_ids,
+                default_skills_mode, default_skill_ids, custom_skill_names, default_disabled_builtin_skill_ids,
                 default_mcps_mode, default_mcp_ids,
                 created_at, updated_at, deleted_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
             ON CONFLICT(id) DO UPDATE SET
                 source = excluded.source,
                 owner_type = excluded.owner_type,
@@ -425,6 +425,7 @@ impl IAssistantDefinitionRepository for SqliteAssistantDefinitionRepository {
                 default_permission_value = excluded.default_permission_value,
                 default_skills_mode = excluded.default_skills_mode,
                 default_skill_ids = excluded.default_skill_ids,
+                custom_skill_names = excluded.custom_skill_names,
                 default_disabled_builtin_skill_ids = excluded.default_disabled_builtin_skill_ids,
                 default_mcps_mode = excluded.default_mcps_mode,
                 default_mcp_ids = excluded.default_mcp_ids,
@@ -454,6 +455,7 @@ impl IAssistantDefinitionRepository for SqliteAssistantDefinitionRepository {
         .bind(params.default_permission_value)
         .bind(params.default_skills_mode)
         .bind(params.default_skill_ids)
+        .bind(params.custom_skill_names)
         .bind(params.default_disabled_builtin_skill_ids)
         .bind(params.default_mcps_mode)
         .bind(params.default_mcp_ids)
@@ -595,6 +597,7 @@ pub async fn rebuild_legacy_assistant_mirror(
 ) -> Result<(), DbError> {
     let prompts = normalize_json_array(Some(definition.recommended_prompts.as_str()));
     let default_skills = normalize_json_array(Some(definition.default_skill_ids.as_str()));
+    let custom_skill_names = normalize_json_array(Some(definition.custom_skill_names.as_str()));
     let disabled_builtin = normalize_json_array(Some(definition.default_disabled_builtin_skill_ids.as_str()));
     let models = match (
         definition.default_model_mode.as_str(),
@@ -631,7 +634,7 @@ pub async fn rebuild_legacy_assistant_mirror(
     .bind(&definition.avatar)
     .bind(&definition.agent_backend)
     .bind(&default_skills)
-    .bind("[]")
+    .bind(&custom_skill_names)
     .bind(&disabled_builtin)
     .bind(&prompts)
     .bind(&models)
@@ -752,6 +755,7 @@ mod tests {
             default_permission_value: Some("workspace-write"),
             default_skills_mode: "fixed",
             default_skill_ids: r#"["pdf","cron"]"#,
+            custom_skill_names: r#"["my-custom-skill"]"#,
             default_disabled_builtin_skill_ids: r#"["todo-tracker"]"#,
             default_mcps_mode: "auto",
             default_mcp_ids: "[]",

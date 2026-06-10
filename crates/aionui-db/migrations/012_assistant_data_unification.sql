@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS assistant_definitions (
     default_skills_mode                TEXT    NOT NULL
                                                CHECK (default_skills_mode IN ('auto', 'fixed')),
     default_skill_ids                  TEXT    NOT NULL DEFAULT '[]',
+    custom_skill_names                 TEXT    NOT NULL DEFAULT '[]',
     default_disabled_builtin_skill_ids TEXT    NOT NULL DEFAULT '[]',
     default_mcps_mode                  TEXT    NOT NULL
                                                CHECK (default_mcps_mode IN ('auto', 'fixed')),
