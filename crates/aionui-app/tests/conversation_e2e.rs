@@ -4,8 +4,9 @@ mod common;
 
 use aionui_db::{
     IAssistantDefinitionRepository, IAssistantOverlayRepository, IAssistantPreferenceRepository,
-    SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository, SqliteAssistantPreferenceRepository,
-    UpsertAssistantDefinitionParams, UpsertAssistantOverlayParams, UpsertAssistantPreferenceParams,
+    IConversationRepository, SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository,
+    SqliteAssistantPreferenceRepository, SqliteConversationRepository, UpsertAssistantDefinitionParams,
+    UpsertAssistantOverlayParams, UpsertAssistantPreferenceParams,
 };
 use axum::http::StatusCode;
 use serde_json::json;
@@ -145,6 +146,7 @@ async fn t1_3b_create_persists_assistant_snapshot_and_updates_preferences() {
     let definition_repo = SqliteAssistantDefinitionRepository::new(pool.clone());
     let state_repo = SqliteAssistantOverlayRepository::new(pool.clone());
     let preference_repo = SqliteAssistantPreferenceRepository::new(pool);
+    let conversation_repo = SqliteConversationRepository::new(services.database.pool().clone());
     let definition = definition_repo.get_by_key("u1").await.unwrap().unwrap();
 
     definition_repo
@@ -232,24 +234,7 @@ async fn t1_3b_create_persists_assistant_snapshot_and_updates_preferences() {
     assert_eq!(data["extra"]["preset_assistant_id"], "u1");
     assert_eq!(data["extra"]["preset_context"], "assistant snapshot rule");
     assert_eq!(data["extra"]["current_model_id"], "override-model");
-    assert_eq!(data["extra"]["assistant_snapshot"]["assistant_id"], "u1");
-    assert_eq!(data["extra"]["assistant_snapshot"]["agent_backend"], "codex");
-    assert_eq!(
-        data["extra"]["assistant_snapshot"]["rules"]["content"],
-        "assistant snapshot rule"
-    );
-    assert_eq!(
-        data["extra"]["assistant_snapshot"]["resolved_defaults"]["permission"],
-        "workspace-write"
-    );
-    assert_eq!(
-        data["extra"]["assistant_snapshot"]["resolved_defaults"]["skill_ids"],
-        json!(["override-skill"])
-    );
-    assert_eq!(
-        data["extra"]["assistant_snapshot"]["resolved_defaults"]["mcp_ids"],
-        json!(["override-mcp"])
-    );
+    assert!(data["extra"].get("assistant_snapshot").is_none());
     assert!(
         data["extra"]["skills"]
             .as_array()
@@ -257,6 +242,18 @@ async fn t1_3b_create_persists_assistant_snapshot_and_updates_preferences() {
             .iter()
             .any(|skill| skill == "override-skill")
     );
+
+    let snapshot = conversation_repo
+        .get_assistant_snapshot(data["id"].as_str().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.assistant_key, "u1");
+    assert_eq!(snapshot.agent_backend, "codex");
+    assert_eq!(snapshot.rules_content, "assistant snapshot rule");
+    assert_eq!(snapshot.resolved_permission_value.as_deref(), Some("workspace-write"));
+    assert_eq!(snapshot.resolved_skill_ids, r#"["override-skill"]"#);
+    assert_eq!(snapshot.resolved_mcp_ids, r#"["override-mcp"]"#);
 
     let updated_preference = preference_repo.get(&definition.definition_id).await.unwrap().unwrap();
     assert_eq!(updated_preference.last_model_id.as_deref(), Some("override-model"));

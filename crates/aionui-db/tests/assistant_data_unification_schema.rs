@@ -9,6 +9,7 @@ async fn migration_creates_assistant_unification_tables_and_keeps_legacy_tables(
             'assistant_definitions',
             'assistant_overlays',
             'assistant_preferences',
+            'conversation_assistant_snapshots',
             'assistants',
             'assistant_overrides'
         ) ORDER BY name",
@@ -25,6 +26,7 @@ async fn migration_creates_assistant_unification_tables_and_keeps_legacy_tables(
             "assistant_overrides".to_string(),
             "assistant_preferences".to_string(),
             "assistants".to_string(),
+            "conversation_assistant_snapshots".to_string(),
         ]
     );
 }
@@ -64,6 +66,19 @@ async fn assistant_definition_table_has_expected_default_columns() {
             .await
             .unwrap_or_default();
     assert!(preference_columns.iter().any(|name| name == "definition_id"));
+
+    let snapshot_columns: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('conversation_assistant_snapshots')")
+            .fetch_all(db.pool())
+            .await
+            .unwrap_or_default();
+    assert!(snapshot_columns.iter().any(|name| name == "conversation_id"));
+    assert!(snapshot_columns.iter().any(|name| name == "assistant_definition_id"));
+    assert!(snapshot_columns.iter().any(|name| name == "assistant_key"));
+    assert!(snapshot_columns.iter().any(|name| name == "default_model_mode"));
+    assert!(snapshot_columns.iter().any(|name| name == "resolved_model_id"));
+    assert!(snapshot_columns.iter().any(|name| name == "resolved_skill_ids"));
+    assert!(snapshot_columns.iter().any(|name| name == "resolved_mcp_ids"));
 }
 
 #[tokio::test]

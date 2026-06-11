@@ -27,6 +27,7 @@ use aionui_db::{
     ConversationFilters, ConversationRowUpdate, CreateAcpSessionParams, IAcpSessionRepository,
     IAgentMetadataRepository, IAssistantDefinitionRepository, IAssistantOverlayRepository,
     IAssistantPreferenceRepository, IConversationRepository, IMcpServerRepository, SaveRuntimeStateParams, SortOrder,
+    UpsertConversationAssistantSnapshotParams,
 };
 use aionui_extension::AssistantRuleDispatcher;
 use aionui_mcp::{AcpMcpCapabilities, parse_acp_mcp_capabilities};
@@ -78,6 +79,18 @@ struct AssistantSnapshotResolvedDefaults {
     mcp_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+struct AssistantSnapshotDefaultModes {
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    permission: String,
+    #[serde(default)]
+    skills: String,
+    #[serde(default)]
+    mcps: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct AssistantSnapshotRules {
     content: String,
@@ -85,16 +98,51 @@ struct AssistantSnapshotRules {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct AssistantSnapshot {
+    assistant_definition_id: String,
     assistant_id: String,
     assistant_source: String,
     #[serde(default)]
     name: String,
     #[serde(default)]
+    avatar_type: String,
+    #[serde(default)]
     avatar: Option<String>,
     agent_backend: String,
     rules: AssistantSnapshotRules,
+    #[serde(default)]
+    default_modes: AssistantSnapshotDefaultModes,
     resolved_defaults: AssistantSnapshotResolvedDefaults,
     created_at: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AssistantEffectiveDefaultModes<'a> {
+    model: &'a str,
+    permission: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct AssistantRuntimePreferenceUpdate<'a> {
+    pub(crate) model: Option<&'a str>,
+    pub(crate) permission: Option<&'a str>,
+}
+
+fn assistant_snapshot_modes<'a>(
+    snapshot: &'a AssistantSnapshot,
+    definition: &'a aionui_db::AssistantDefinitionRow,
+) -> AssistantEffectiveDefaultModes<'a> {
+    AssistantEffectiveDefaultModes {
+        model: if snapshot.default_modes.model.is_empty() {
+            definition.default_model_mode.as_str()
+        } else {
+            snapshot.default_modes.model.as_str()
+        },
+        permission: if snapshot.default_modes.permission.is_empty() {
+            definition.default_permission_mode.as_str()
+        } else {
+            snapshot.default_modes.permission.as_str()
+        },
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -533,11 +581,6 @@ impl ConversationService {
                 serde_json::Value::String(snapshot.assistant_id.clone()),
             );
             obj.insert(
-                "assistant_snapshot".to_owned(),
-                serde_json::to_value(snapshot)
-                    .map_err(|e| ConversationError::internal(format!("Failed to serialize assistant snapshot: {e}")))?,
-            );
-            obj.insert(
                 "preset_assistant_id".to_owned(),
                 serde_json::Value::String(snapshot.assistant_id.clone()),
             );
@@ -764,6 +807,44 @@ impl ConversationService {
 
         self.conversation_repo.create(&row).await?;
 
+        if let Some(snapshot) = assistant_snapshot.as_ref() {
+            let resolved_skill_ids = serde_json::to_string(&snapshot.resolved_defaults.skill_ids).map_err(|e| {
+                ConversationError::internal(format!("Failed to serialize assistant skill snapshot: {e}"))
+            })?;
+            let resolved_disabled_builtin_skill_ids =
+                serde_json::to_string(&snapshot.resolved_defaults.disabled_builtin_skill_ids).map_err(|e| {
+                    ConversationError::internal(format!(
+                        "Failed to serialize assistant disabled builtin skill snapshot: {e}"
+                    ))
+                })?;
+            let resolved_mcp_ids = serde_json::to_string(&snapshot.resolved_defaults.mcp_ids)
+                .map_err(|e| ConversationError::internal(format!("Failed to serialize assistant MCP snapshot: {e}")))?;
+
+            self.conversation_repo
+                .upsert_assistant_snapshot(&UpsertConversationAssistantSnapshotParams {
+                    conversation_id: &row.id,
+                    assistant_definition_id: &snapshot.assistant_definition_id,
+                    assistant_key: &snapshot.assistant_id,
+                    assistant_source: &snapshot.assistant_source,
+                    assistant_name: &snapshot.name,
+                    assistant_avatar_type: &snapshot.avatar_type,
+                    assistant_avatar_value: snapshot.avatar.as_deref(),
+                    agent_backend: &snapshot.agent_backend,
+                    rules_content: &snapshot.rules.content,
+                    default_model_mode: &snapshot.default_modes.model,
+                    resolved_model_id: snapshot.resolved_defaults.model.as_deref(),
+                    default_permission_mode: &snapshot.default_modes.permission,
+                    resolved_permission_value: snapshot.resolved_defaults.permission.as_deref(),
+                    default_skills_mode: &snapshot.default_modes.skills,
+                    resolved_skill_ids: &resolved_skill_ids,
+                    resolved_disabled_builtin_skill_ids: &resolved_disabled_builtin_skill_ids,
+                    default_mcps_mode: &snapshot.default_modes.mcps,
+                    resolved_mcp_ids: &resolved_mcp_ids,
+                })
+                .await?
+                .ok_or_else(|| ConversationError::internal("assistant snapshot upsert returned no row"))?;
+        }
+
         // ACP conversations own one `acp_session` row (1:1 by
         // conversation_id). Other agent types have no session-level
         // state so we only create it for ACP.
@@ -772,8 +853,7 @@ impl ConversationService {
         }
 
         if let Some(snapshot) = assistant_snapshot.as_ref() {
-            self.persist_assistant_preferences_from_snapshot(&snapshot.assistant_id, snapshot)
-                .await?;
+            self.persist_assistant_preferences_from_snapshot(snapshot).await?;
         }
 
         let response = row_to_response(row, &self.workspace_root)?;
@@ -967,9 +1047,11 @@ impl ConversationService {
             .unwrap_or_else(|| definition.agent_backend.clone());
 
         Ok(Some(AssistantSnapshot {
+            assistant_definition_id: definition.definition_id,
             assistant_id: assistant_id.to_owned(),
             assistant_source: definition.source,
             name: definition.name,
+            avatar_type: definition.avatar_type,
             avatar: definition.avatar_value,
             agent_backend,
             rules: AssistantSnapshotRules {
@@ -978,6 +1060,12 @@ impl ConversationService {
                 } else {
                     rules_content
                 },
+            },
+            default_modes: AssistantSnapshotDefaultModes {
+                model: definition.default_model_mode.clone(),
+                permission: definition.default_permission_mode.clone(),
+                skills: definition.default_skills_mode.clone(),
+                mcps: definition.default_mcps_mode.clone(),
             },
             resolved_defaults: AssistantSnapshotResolvedDefaults {
                 model,
@@ -992,39 +1080,29 @@ impl ConversationService {
 
     async fn persist_assistant_preferences_from_snapshot(
         &self,
-        assistant_id: &str,
         snapshot: &AssistantSnapshot,
     ) -> Result<(), ConversationError> {
-        let (Some(definition_repo), Some(preference_repo)) =
-            (self.assistant_definition_repo(), self.assistant_preference_repo())
-        else {
-            return Ok(());
-        };
-        let Some(definition) = definition_repo
-            .get_by_key(assistant_id)
-            .await
-            .map_err(|e| ConversationError::internal(format!("assistant definition lookup failed: {e}")))?
-        else {
+        let Some(preference_repo) = self.assistant_preference_repo() else {
             return Ok(());
         };
 
         let existing_preference = preference_repo
-            .get(&definition.definition_id)
+            .get(&snapshot.assistant_definition_id)
             .await
             .map_err(|e| ConversationError::internal(format!("assistant preference lookup failed: {e}")))?;
-        let last_model_id = if definition.default_model_mode == "auto" {
+        let last_model_id = if snapshot.default_modes.model == "auto" {
             snapshot.resolved_defaults.model.clone()
         } else {
             existing_preference.as_ref().and_then(|row| row.last_model_id.clone())
         };
-        let last_permission_value = if definition.default_permission_mode == "auto" {
+        let last_permission_value = if snapshot.default_modes.permission == "auto" {
             snapshot.resolved_defaults.permission.clone()
         } else {
             existing_preference
                 .as_ref()
                 .and_then(|row| row.last_permission_value.clone())
         };
-        let last_skill_ids = if definition.default_skills_mode == "auto" {
+        let last_skill_ids = if snapshot.default_modes.skills == "auto" {
             serde_json::to_string(&snapshot.resolved_defaults.skill_ids)
                 .map_err(|e| ConversationError::internal(format!("encode assistant skills: {e}")))?
         } else {
@@ -1033,7 +1111,7 @@ impl ConversationService {
                 .map(|row| row.last_skill_ids.clone())
                 .unwrap_or_else(|| "[]".to_string())
         };
-        let last_disabled_builtin_skill_ids = if definition.default_skills_mode == "auto" {
+        let last_disabled_builtin_skill_ids = if snapshot.default_modes.skills == "auto" {
             serde_json::to_string(&snapshot.resolved_defaults.disabled_builtin_skill_ids)
                 .map_err(|e| ConversationError::internal(format!("encode assistant disabled builtin skills: {e}")))?
         } else {
@@ -1042,7 +1120,7 @@ impl ConversationService {
                 .map(|row| row.last_disabled_builtin_skill_ids.clone())
                 .unwrap_or_else(|| "[]".to_string())
         };
-        let last_mcp_ids = if definition.default_mcps_mode == "auto" {
+        let last_mcp_ids = if snapshot.default_modes.mcps == "auto" {
             serde_json::to_string(&snapshot.resolved_defaults.mcp_ids)
                 .map_err(|e| ConversationError::internal(format!("encode assistant mcps: {e}")))?
         } else {
@@ -1054,7 +1132,7 @@ impl ConversationService {
 
         preference_repo
             .upsert(&aionui_db::UpsertAssistantPreferenceParams {
-                definition_id: &definition.definition_id,
+                definition_id: &snapshot.assistant_definition_id,
                 last_model_id: last_model_id.as_deref(),
                 last_permission_value: last_permission_value.as_deref(),
                 last_skill_ids: &last_skill_ids,
@@ -1063,6 +1141,150 @@ impl ConversationService {
             })
             .await
             .map_err(|e| ConversationError::internal(format!("assistant preference upsert failed: {e}")))?;
+
+        Ok(())
+    }
+
+    pub(crate) async fn persist_runtime_assistant_preferences(
+        &self,
+        conversation_id: &str,
+        updates: AssistantRuntimePreferenceUpdate<'_>,
+    ) -> Result<(), ConversationError> {
+        let (Some(definition_repo), Some(preference_repo)) =
+            (self.assistant_definition_repo(), self.assistant_preference_repo())
+        else {
+            return Ok(());
+        };
+
+        let persisted_snapshot = self
+            .conversation_repo
+            .get_assistant_snapshot(conversation_id)
+            .await
+            .map_err(|e| {
+                ConversationError::internal(format!(
+                    "Failed to load persisted assistant snapshot for preference sync: {e}"
+                ))
+            })?;
+
+        let fallback = if persisted_snapshot.is_none() {
+            let Some(conversation) = self.conversation_repo.get(conversation_id).await.map_err(|e| {
+                ConversationError::internal(format!(
+                    "Failed to load conversation for assistant preference sync: {e}"
+                ))
+            })?
+            else {
+                return Ok(());
+            };
+            let extra: serde_json::Value = serde_json::from_str(&conversation.extra).map_err(|e| {
+                ConversationError::internal(format!("Invalid extra JSON for assistant preference sync: {e}"))
+            })?;
+            let legacy_snapshot = extra
+                .get("assistant_snapshot")
+                .cloned()
+                .map(serde_json::from_value::<AssistantSnapshot>)
+                .transpose()
+                .map_err(|e| {
+                    ConversationError::internal(format!("Invalid assistant snapshot for preference sync: {e}"))
+                })?;
+            let assistant_id = legacy_snapshot
+                .as_ref()
+                .map(|value| value.assistant_id.clone())
+                .or_else(|| {
+                    extra
+                        .get("assistant_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned)
+                })
+                .or_else(|| {
+                    extra
+                        .get("preset_assistant_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned)
+                });
+            let Some(assistant_id) = assistant_id else {
+                return Ok(());
+            };
+            let Some(definition) = definition_repo
+                .get_by_key(&assistant_id)
+                .await
+                .map_err(|e| ConversationError::internal(format!("assistant definition lookup failed: {e}")))?
+            else {
+                return Ok(());
+            };
+            Some((definition, legacy_snapshot))
+        } else {
+            None
+        };
+
+        let (definition_id, default_modes) = if let Some(snapshot) = persisted_snapshot.as_ref() {
+            (
+                snapshot.assistant_definition_id.clone(),
+                AssistantEffectiveDefaultModes {
+                    model: snapshot.default_model_mode.as_str(),
+                    permission: snapshot.default_permission_mode.as_str(),
+                },
+            )
+        } else {
+            let (definition, legacy_snapshot) = fallback
+                .as_ref()
+                .ok_or_else(|| ConversationError::internal("assistant preference sync fallback missing"))?;
+            (
+                definition.definition_id.clone(),
+                legacy_snapshot
+                    .as_ref()
+                    .map(|value| assistant_snapshot_modes(value, definition))
+                    .unwrap_or_else(|| AssistantEffectiveDefaultModes {
+                        model: definition.default_model_mode.as_str(),
+                        permission: definition.default_permission_mode.as_str(),
+                    }),
+            )
+        };
+
+        let existing_preference = preference_repo
+            .get(&definition_id)
+            .await
+            .map_err(|e| ConversationError::internal(format!("assistant preference lookup failed: {e}")))?;
+
+        let last_model_id = if default_modes.model == "auto" {
+            updates
+                .model
+                .map(ToOwned::to_owned)
+                .or_else(|| existing_preference.as_ref().and_then(|row| row.last_model_id.clone()))
+        } else {
+            existing_preference.as_ref().and_then(|row| row.last_model_id.clone())
+        };
+        let last_permission_value = if default_modes.permission == "auto" {
+            updates.permission.map(ToOwned::to_owned).or_else(|| {
+                existing_preference
+                    .as_ref()
+                    .and_then(|row| row.last_permission_value.clone())
+            })
+        } else {
+            existing_preference
+                .as_ref()
+                .and_then(|row| row.last_permission_value.clone())
+        };
+
+        preference_repo
+            .upsert(&aionui_db::UpsertAssistantPreferenceParams {
+                definition_id: &definition_id,
+                last_model_id: last_model_id.as_deref(),
+                last_permission_value: last_permission_value.as_deref(),
+                last_skill_ids: existing_preference
+                    .as_ref()
+                    .map(|row| row.last_skill_ids.as_str())
+                    .unwrap_or("[]"),
+                last_disabled_builtin_skill_ids: existing_preference
+                    .as_ref()
+                    .map(|row| row.last_disabled_builtin_skill_ids.as_str())
+                    .unwrap_or("[]"),
+                last_mcp_ids: existing_preference
+                    .as_ref()
+                    .map(|row| row.last_mcp_ids.as_str())
+                    .unwrap_or("[]"),
+            })
+            .await
+            .map_err(|e| ConversationError::internal(format!("assistant runtime preference upsert failed: {e}")))?;
 
         Ok(())
     }
@@ -1258,6 +1480,18 @@ impl ConversationService {
         };
 
         self.conversation_repo.update(id, &updates).await?;
+
+        if let Some(model) = req.model.as_ref() {
+            let selected_model = model.use_model.as_deref().unwrap_or(model.model.as_str());
+            self.persist_runtime_assistant_preferences(
+                id,
+                AssistantRuntimePreferenceUpdate {
+                    model: Some(selected_model),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        }
 
         if model_changed {
             info!(

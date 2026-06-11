@@ -24,7 +24,7 @@ pub use assistant::{
 };
 pub use channel::{AssistantSessionRow, AssistantUserRow, ChannelPluginRow, PairingCodeRow};
 pub use client_preference::ClientPreference;
-pub use conversation::ConversationRow;
+pub use conversation::{ConversationAssistantSnapshotRow, ConversationRow, UpsertConversationAssistantSnapshotParams};
 pub use conversation_artifact::ConversationArtifactRow;
 pub use cron_job::CronJobRow;
 pub use mcp_server::McpServerRow;
