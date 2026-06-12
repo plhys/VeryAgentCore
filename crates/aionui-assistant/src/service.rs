@@ -1488,7 +1488,11 @@ fn is_direct_avatar_url(value: &str) -> bool {
 fn parse_assistant_avatar_route(value: &str) -> Option<String> {
     let prefix = "/api/assistants/";
     let suffix = "/avatar";
-    let id = value.strip_prefix(prefix)?.strip_suffix(suffix)?.trim();
+    let route = value
+        .strip_prefix(prefix)
+        .map(|rest| format!("{prefix}{rest}"))
+        .or_else(|| value.find(prefix).map(|index| value[index..].to_string()))?;
+    let id = route.strip_prefix(prefix)?.strip_suffix(suffix)?.trim();
     (!id.is_empty()).then(|| id.to_string())
 }
 

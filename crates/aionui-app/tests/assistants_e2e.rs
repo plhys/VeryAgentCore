@@ -608,6 +608,41 @@ async fn create_user_avatar_from_builtin_avatar_route_copies_builtin_asset() {
 }
 
 #[tokio::test]
+async fn create_user_avatar_from_absolute_builtin_avatar_route_copies_builtin_asset() {
+    let fx = fixture().await;
+
+    let req = json_with_token(
+        "POST",
+        "/api/assistants",
+        json!({
+            "id": "u-avatar-from-builtin-absolute",
+            "name": "Builtin Avatar Absolute Copy",
+            "avatar": "http://127.0.0.1:56663/api/assistants/builtin-office/avatar",
+            "preset_agent_type": "aionrs",
+        }),
+        &fx.token,
+        &fx.csrf,
+    );
+    let resp = fx.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = body_json(resp).await;
+    assert_eq!(
+        body["data"]["avatar"],
+        "/api/assistants/u-avatar-from-builtin-absolute/avatar"
+    );
+
+    let persisted_avatar = fx
+        .user_data_dir
+        .join("assistant-avatars/u-avatar-from-builtin-absolute.png");
+    assert!(
+        persisted_avatar.exists(),
+        "persisted avatar missing: {}",
+        persisted_avatar.display()
+    );
+    assert_eq!(std::fs::read(&persisted_avatar).unwrap(), b"not-a-real-png");
+}
+
+#[tokio::test]
 async fn update_user_avatar_with_existing_route_preserves_served_file() {
     let fx = fixture().await;
     let source_avatar = fx.user_data_dir.join("picked-avatar.png");
