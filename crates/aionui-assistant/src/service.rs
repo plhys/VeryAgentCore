@@ -1242,6 +1242,11 @@ impl AssistantService {
                 }
                 return self.persist_user_avatar_file(id, &existing_avatar_path).map(Some);
             }
+            if let Some(builtin_avatar) = self.builtin.avatar_asset(&source_assistant_id) {
+                return self
+                    .persist_user_avatar_bytes(id, &builtin_avatar.bytes, builtin_avatar.extension.as_deref())
+                    .map(Some);
+            }
             return Ok(Some(value.to_string()));
         }
 
@@ -1278,6 +1283,35 @@ impl AssistantService {
                 source_path.display(),
                 destination.display()
             ))
+        })?;
+
+        Ok(destination.to_string_lossy().to_string())
+    }
+
+    fn persist_user_avatar_bytes(
+        &self,
+        id: &str,
+        bytes: &[u8],
+        extension: Option<&str>,
+    ) -> Result<String, AssistantError> {
+        let extension = extension
+            .map(str::to_ascii_lowercase)
+            .ok_or_else(|| AssistantError::BadRequest("assistant avatar must have a file extension".into()))?;
+
+        if !is_supported_avatar_extension(&extension) {
+            return Err(AssistantError::BadRequest(format!(
+                "unsupported assistant avatar format: .{extension}"
+            )));
+        }
+
+        let destination_dir = self.user_avatars_dir();
+        std::fs::create_dir_all(&destination_dir)
+            .map_err(|e| AssistantError::Internal(format!("create assistant avatar directory: {e}")))?;
+        remove_assistant_avatar_files(&destination_dir, id);
+
+        let destination = destination_dir.join(format!("{id}.{extension}"));
+        std::fs::write(&destination, bytes).map_err(|e| {
+            AssistantError::Internal(format!("write assistant avatar to '{}': {e}", destination.display()))
         })?;
 
         Ok(destination.to_string_lossy().to_string())
@@ -1399,7 +1433,7 @@ fn assistant_error_to_extension_error(error: AssistantError) -> ExtensionError {
 
 fn avatar_display_value(definition: &AssistantDefinitionRow) -> Option<String> {
     match definition.avatar_type.as_str() {
-        "user_asset" => definition.avatar_value.as_deref().map(|value| {
+        "builtin_asset" | "user_asset" => definition.avatar_value.as_deref().map(|value| {
             if is_direct_avatar_url(value) {
                 value.to_string()
             } else {
