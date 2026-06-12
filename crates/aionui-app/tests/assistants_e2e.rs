@@ -224,13 +224,15 @@ async fn fixture() -> Fixture {
     let builtin = Arc::new(BuiltinAssistantRegistry::load_from_dir(builtin_assets_dir.clone()));
     let service = Arc::new(AssistantService::new(
         pool,
-        definition_repo,
-        state_repo,
-        preference_repo,
-        repo,
-        override_repo,
-        provider_repo,
-        builtin,
+        aionui_assistant::service::AssistantServiceDeps {
+            definition_repo,
+            state_repo,
+            preference_repo,
+            repo,
+            override_repo,
+            provider_repo,
+            builtin,
+        },
         user_data_dir.clone(),
     ));
     service.bootstrap_assistant_storage().await.unwrap();

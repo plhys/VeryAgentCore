@@ -48,6 +48,16 @@ pub struct AssistantService {
     user_data_dir: PathBuf,
 }
 
+pub struct AssistantServiceDeps {
+    pub definition_repo: Arc<dyn IAssistantDefinitionRepository>,
+    pub state_repo: Arc<dyn IAssistantOverlayRepository>,
+    pub preference_repo: Arc<dyn IAssistantPreferenceRepository>,
+    pub repo: Arc<dyn IAssistantRepository>,
+    pub override_repo: Arc<dyn IAssistantOverrideRepository>,
+    pub provider_repo: Arc<dyn IProviderRepository>,
+    pub builtin: Arc<BuiltinAssistantRegistry>,
+}
+
 impl AssistantService {
     /// Construct an `AssistantService` pinned to the runtime data directory.
     ///
@@ -64,17 +74,16 @@ impl AssistantService {
     /// release directory while the db lived under `~/.aionui-dev/`,
     /// resulting in `read_rule` returning empty in dev mode. Forcing the
     /// caller to pass a path makes the wiring explicit.
-    pub fn new(
-        pool: SqlitePool,
-        definition_repo: Arc<dyn IAssistantDefinitionRepository>,
-        state_repo: Arc<dyn IAssistantOverlayRepository>,
-        preference_repo: Arc<dyn IAssistantPreferenceRepository>,
-        repo: Arc<dyn IAssistantRepository>,
-        override_repo: Arc<dyn IAssistantOverrideRepository>,
-        provider_repo: Arc<dyn IProviderRepository>,
-        builtin: Arc<BuiltinAssistantRegistry>,
-        user_data_dir: PathBuf,
-    ) -> Self {
+    pub fn new(pool: SqlitePool, deps: AssistantServiceDeps, user_data_dir: PathBuf) -> Self {
+        let AssistantServiceDeps {
+            definition_repo,
+            state_repo,
+            preference_repo,
+            repo,
+            override_repo,
+            provider_repo,
+            builtin,
+        } = deps;
         Self {
             pool,
             definition_repo,
@@ -1170,6 +1179,7 @@ impl AssistantService {
     ///   override when `AIONUI_BUILTIN_ASSISTANTS_PATH` is set).
     /// - User source → scan the user-writable avatars directory for a file
     ///   whose stem equals `id`.
+    ///
     /// Built-ins whose manifest `avatar` field is an inline emoji (and thus
     /// has no on-disk file) also return `None`; clients fall back to the
     /// text avatar for those.
@@ -1975,13 +1985,15 @@ mod tests {
 
         let service = AssistantService::new(
             db.pool().clone(),
-            definition_repo.clone(),
-            state_repo.clone(),
-            preference_repo.clone(),
-            repo,
-            orepo,
-            provider_repo.clone(),
-            builtin_reg,
+            AssistantServiceDeps {
+                definition_repo: definition_repo.clone(),
+                state_repo: state_repo.clone(),
+                preference_repo: preference_repo.clone(),
+                repo,
+                override_repo: orepo,
+                provider_repo: provider_repo.clone(),
+                builtin: builtin_reg,
+            },
             tmp.path().to_path_buf(),
         );
         service.bootstrap_assistant_storage().await.unwrap();
@@ -2876,13 +2888,15 @@ mod tests {
         let provider_repo: Arc<dyn IProviderRepository> = Arc::new(SqliteProviderRepository::new(db.pool().clone()));
         let service = AssistantService::new(
             db.pool().clone(),
-            definition_repo,
-            state_repo,
-            preference_repo,
-            repo,
-            orepo,
-            provider_repo,
-            builtin_reg,
+            AssistantServiceDeps {
+                definition_repo,
+                state_repo,
+                preference_repo,
+                repo,
+                override_repo: orepo,
+                provider_repo,
+                builtin: builtin_reg,
+            },
             tmp.path().to_path_buf(),
         );
         let content = service.read_rule("builtin-office", Some("en-US")).await.unwrap();
