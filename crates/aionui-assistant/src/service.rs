@@ -708,9 +708,7 @@ impl AssistantService {
             .map_err(|e| AssistantError::Internal(format!("get assistant preference: {e}")))?;
 
         let mut last_model_id = existing.as_ref().and_then(|row| row.last_model_id.clone());
-        let mut last_permission_value = existing
-            .as_ref()
-            .and_then(|row| row.last_permission_value.clone());
+        let mut last_permission_value = existing.as_ref().and_then(|row| row.last_permission_value.clone());
         let mut last_skill_ids = existing
             .as_ref()
             .map(|row| decode_str_list(Some(row.last_skill_ids.as_str())))
@@ -733,9 +731,7 @@ impl AssistantService {
                     last_model_id = model.value.clone().filter(|value| !value.trim().is_empty());
                 }
                 "auto" => {
-                    if previous_definition
-                        .is_some_and(|current| current.default_model_mode == "fixed")
-                    {
+                    if previous_definition.is_some_and(|current| current.default_model_mode == "fixed") {
                         last_model_id = None;
                     }
                 }
@@ -750,15 +746,10 @@ impl AssistantService {
         if let Some(permission) = defaults.permission.as_ref() {
             match permission.mode.as_str() {
                 "fixed" => {
-                    last_permission_value = permission
-                        .value
-                        .clone()
-                        .filter(|value| !value.trim().is_empty());
+                    last_permission_value = permission.value.clone().filter(|value| !value.trim().is_empty());
                 }
                 "auto" => {
-                    if previous_definition
-                        .is_some_and(|current| current.default_permission_mode == "fixed")
-                    {
+                    if previous_definition.is_some_and(|current| current.default_permission_mode == "fixed") {
                         last_permission_value = None;
                     }
                 }
@@ -777,9 +768,7 @@ impl AssistantService {
                     last_disabled_builtin_skill_ids.clear();
                 }
                 "auto" => {
-                    if previous_definition
-                        .is_some_and(|current| current.default_skills_mode == "fixed")
-                    {
+                    if previous_definition.is_some_and(|current| current.default_skills_mode == "fixed") {
                         last_skill_ids.clear();
                         last_disabled_builtin_skill_ids.clear();
                     }
@@ -798,9 +787,7 @@ impl AssistantService {
                     last_mcp_ids = mcps.value.clone();
                 }
                 "auto" => {
-                    if previous_definition
-                        .is_some_and(|current| current.default_mcps_mode == "fixed")
-                    {
+                    if previous_definition.is_some_and(|current| current.default_mcps_mode == "fixed") {
                         last_mcp_ids.clear();
                     }
                 }
@@ -829,10 +816,8 @@ impl AssistantService {
 
         let last_skill_ids_json = serde_json::to_string(&last_skill_ids)
             .map_err(|e| AssistantError::Internal(format!("encode assistant skills preference: {e}")))?;
-        let last_disabled_builtin_skill_ids_json =
-            serde_json::to_string(&last_disabled_builtin_skill_ids).map_err(|e| {
-                AssistantError::Internal(format!("encode disabled assistant skills preference: {e}"))
-            })?;
+        let last_disabled_builtin_skill_ids_json = serde_json::to_string(&last_disabled_builtin_skill_ids)
+            .map_err(|e| AssistantError::Internal(format!("encode disabled assistant skills preference: {e}")))?;
         let last_mcp_ids_json = serde_json::to_string(&last_mcp_ids)
             .map_err(|e| AssistantError::Internal(format!("encode assistant mcp preference: {e}")))?;
 
@@ -2638,12 +2623,13 @@ mod tests {
             .unwrap();
 
         let definition = fx.definition_repo.get_by_key("u1").await.unwrap().unwrap();
-        assert!(fx
-            .preference_repo
-            .get(&definition.definition_id)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            fx.preference_repo
+                .get(&definition.definition_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
