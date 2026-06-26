@@ -58,11 +58,16 @@ _cargo *ARGS:
         aionrs_root=$(cd "$AIONRS" && pwd -P)
         crates=(
             aion-agent
-            aion-providers
-            aion-types
-            aion-protocol
+            aion-compact
             aion-config
             aion-mcp
+            aion-memory
+            aion-process
+            aion-protocol
+            aion-providers
+            aion-skills
+            aion-tools
+            aion-types
         )
 
         for crate in "${crates[@]}"; do
@@ -101,11 +106,17 @@ _cargo *ARGS:
         verify_local_aionrs_patch
     fi
 
+    args=({{ARGS}})
+
     set +e
     if ((${#cargo_config[@]})); then
-        cargo "${cargo_config[@]}" {{ARGS}}
+        if ((${#args[@]})) && [[ "${args[0]}" == "clippy" ]]; then
+            cargo "${args[0]}" "${cargo_config[@]}" "${args[@]:1}"
+        else
+            cargo "${cargo_config[@]}" "${args[@]}"
+        fi
     else
-        cargo {{ARGS}}
+        cargo "${args[@]}"
     fi
     status=$?
     set -e
