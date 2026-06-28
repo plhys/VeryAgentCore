@@ -1,0 +1,29 @@
+[package]
+name = "veryagent-assistant"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+veryagent-common = { workspace = true }
+veryagent-api-types = { workspace = true }
+veryagent-db = { workspace = true }
+veryagent-auth = { workspace = true }
+veryagent-extension = { workspace = true }
+axum = { workspace = true }
+dirs = { workspace = true }
+include_dir = "0.7"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+veryagent-realtime = { workspace = true }
+tempfile = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+http-body-util = { workspace = true }

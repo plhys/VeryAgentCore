@@ -1,0 +1,80 @@
+[package]
+name = "veryagent-app"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "veryagent-core"
+path = "src/main.rs"
+
+[features]
+default = ["telegram", "lark", "dingtalk", "weixin"]
+telegram = ["veryagent-channel/telegram"]
+lark = ["veryagent-channel/lark"]
+dingtalk = ["veryagent-channel/dingtalk"]
+weixin = ["veryagent-channel/weixin"]
+
+[dependencies]
+veryagent-common.workspace = true
+veryagent-assets.workspace = true
+veryagent-db.workspace = true
+veryagent-api-types.workspace = true
+veryagent-realtime.workspace = true
+veryagent-auth.workspace = true
+veryagent-system.workspace = true
+veryagent-file.workspace = true
+veryagent-office.workspace = true
+veryagent-shell.workspace = true
+veryagent-ai-agent.workspace = true
+veryagent-mcp.workspace = true
+veryagent-conversation.workspace = true
+veryagent-extension.workspace = true
+veryagent-channel.workspace = true
+veryagent-team.workspace = true
+veryagent-team-prompts.workspace = true
+veryagent-cron.workspace = true
+veryagent-assistant.workspace = true
+veryagent-runtime.workspace = true
+aion-config.workspace = true
+axum.workspace = true
+dirs.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+reqwest.workspace = true
+rmcp = { version = "1.5", features = ["server", "transport-io", "schemars"] }
+anyhow.workspace = true
+async-trait.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+veryagent-api-types.workspace = true
+veryagent-realtime.workspace = true
+# Enable the `AgentInstance::Mock` variant so tests can build fake agents
+# through the trait-object escape hatch without spawning real CLI processes.
+veryagent-ai-agent = { workspace = true, features = ["test-support"] }
+base64.workspace = true
+git2.workspace = true
+http-body-util.workspace = true
+rust_xlsxwriter.workspace = true
+sqlx = { workspace = true, features = ["migrate"] }
+tempfile = "3"
+tower = { workspace = true, features = ["util"] }
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+wiremock = "0.6"

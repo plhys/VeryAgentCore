@@ -1,27 +1,27 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/aionui-assets",
-    "crates/aionui-common",
-    "crates/aionui-db",
-    "crates/aionui-api-types",
-    "crates/aionui-realtime",
-    "crates/aionui-runtime",
-    "crates/aionui-auth",
-    "crates/aionui-system",
-    "crates/aionui-file",
-    "crates/aionui-office",
-    "crates/aionui-shell",
-    "crates/aionui-ai-agent",
-    "crates/aionui-mcp",
-    "crates/aionui-conversation",
-    "crates/aionui-extension",
-    "crates/aionui-channel",
-    "crates/aionui-team-prompts",
-    "crates/aionui-team",
-    "crates/aionui-cron",
-    "crates/aionui-assistant",
-    "crates/aionui-app",
+    "crates/veryagent-assets",
+    "crates/veryagent-common",
+    "crates/veryagent-db",
+    "crates/veryagent-api-types",
+    "crates/veryagent-realtime",
+    "crates/veryagent-runtime",
+    "crates/veryagent-auth",
+    "crates/veryagent-system",
+    "crates/veryagent-file",
+    "crates/veryagent-office",
+    "crates/veryagent-shell",
+    "crates/veryagent-ai-agent",
+    "crates/veryagent-mcp",
+    "crates/veryagent-conversation",
+    "crates/veryagent-extension",
+    "crates/veryagent-channel",
+    "crates/veryagent-team-prompts",
+    "crates/veryagent-team",
+    "crates/veryagent-cron",
+    "crates/veryagent-assistant",
+    "crates/veryagent-app",
 ]
 
 [workspace.package]
@@ -31,27 +31,27 @@ license = "MIT"
 
 [workspace.dependencies]
 # Internal crates
-aionui-common = { path = "crates/aionui-common" }
-aionui-assets = { path = "crates/aionui-assets" }
-aionui-db = { path = "crates/aionui-db" }
-aionui-api-types = { path = "crates/aionui-api-types" }
-aionui-realtime = { path = "crates/aionui-realtime" }
-aionui-runtime = { path = "crates/aionui-runtime" }
-aionui-auth = { path = "crates/aionui-auth" }
-aionui-system = { path = "crates/aionui-system" }
-aionui-file = { path = "crates/aionui-file" }
-aionui-office = { path = "crates/aionui-office" }
-aionui-shell = { path = "crates/aionui-shell" }
-aionui-ai-agent = { path = "crates/aionui-ai-agent" }
-aionui-mcp = { path = "crates/aionui-mcp" }
-aionui-conversation = { path = "crates/aionui-conversation" }
-aionui-extension = { path = "crates/aionui-extension" }
-aionui-channel = { path = "crates/aionui-channel" }
-aionui-team-prompts = { path = "crates/aionui-team-prompts" }
-aionui-team = { path = "crates/aionui-team" }
-aionui-cron = { path = "crates/aionui-cron" }
-aionui-assistant = { path = "crates/aionui-assistant" }
-aionui-app = { path = "crates/aionui-app" }
+veryagent-common = { path = "crates/veryagent-common" }
+veryagent-assets = { path = "crates/veryagent-assets" }
+veryagent-db = { path = "crates/veryagent-db" }
+veryagent-api-types = { path = "crates/veryagent-api-types" }
+veryagent-realtime = { path = "crates/veryagent-realtime" }
+veryagent-runtime = { path = "crates/veryagent-runtime" }
+veryagent-auth = { path = "crates/veryagent-auth" }
+veryagent-system = { path = "crates/veryagent-system" }
+veryagent-file = { path = "crates/veryagent-file" }
+veryagent-office = { path = "crates/veryagent-office" }
+veryagent-shell = { path = "crates/veryagent-shell" }
+veryagent-ai-agent = { path = "crates/veryagent-ai-agent" }
+veryagent-mcp = { path = "crates/veryagent-mcp" }
+veryagent-conversation = { path = "crates/veryagent-conversation" }
+veryagent-extension = { path = "crates/veryagent-extension" }
+veryagent-channel = { path = "crates/veryagent-channel" }
+veryagent-team-prompts = { path = "crates/veryagent-team-prompts" }
+veryagent-team = { path = "crates/veryagent-team" }
+veryagent-cron = { path = "crates/veryagent-cron" }
+veryagent-assistant = { path = "crates/veryagent-assistant" }
+veryagent-app = { path = "crates/veryagent-app" }
 
 aion-agent = { git = "https://github.com/iOfficeAI/aionrs.git", tag = "v0.1.33" }
 aion-providers = { git = "https://github.com/iOfficeAI/aionrs.git", tag = "v0.1.33" }
