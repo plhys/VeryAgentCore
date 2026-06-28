@@ -21,11 +21,11 @@ permissions:
   contents: write
 
 env:
-  BINARY_NAME: aioncore
+  BINARY_NAME: veryagent-core
   CARGO_TERM_COLOR: always
   CARGO_HTTP_TIMEOUT: "600"
   CARGO_NET_RETRY: "10"
-  AIONUI_EMBED_BUN: "1"
+  VERYAGENT_EMBED_BUN: "1"
   BUN_VARIANT: default
   RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
 
@@ -64,26 +64,26 @@ jobs:
           # deliberately drop it.
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            binary_name: aioncore
+            binary_name: veryagent-core
           # Linux aarch64: keep `cross` (its image happens to not trip the
           # aws-lc-sys check and also yields an older GLIBC baseline).
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            binary_name: aioncore
+            binary_name: veryagent-core
             use_cross: true
           - os: macos-latest
             target: x86_64-apple-darwin
-            binary_name: aioncore
+            binary_name: veryagent-core
           - os: macos-latest
             target: aarch64-apple-darwin
-            binary_name: aioncore
+            binary_name: veryagent-core
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            binary_name: aioncore.exe
+            binary_name: veryagent-core.exe
             rustflags: "-C target-feature=+crt-static"
           - os: windows-latest
             target: aarch64-pc-windows-msvc
-            binary_name: aioncore.exe
+            binary_name: veryagent-core.exe
             rustflags: "-C target-feature=+crt-static"
 
     steps:
@@ -125,9 +125,9 @@ jobs:
             echo "Using RUSTFLAGS=${RUSTFLAGS}"
           fi
           if [[ "${{ matrix.use_cross }}" == "true" ]]; then
-            cross build --release --target ${{ matrix.target }} -p aionui-app
+            cross build --release --target ${{ matrix.target }} -p veryagent-app
           else
-            cargo build --release --target ${{ matrix.target }} -p aionui-app
+            cargo build --release --target ${{ matrix.target }} -p veryagent-app
           fi
 
       - name: Package binary (Unix)
@@ -137,7 +137,7 @@ jobs:
           VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
           mkdir -p dist
-          ARCHIVE="aioncore-v${VERSION}-${{ matrix.target }}.tar.gz"
+          ARCHIVE="veryagent-core-v${VERSION}-${{ matrix.target }}.tar.gz"
           tar -C target/${{ matrix.target }}/release -czf "dist/${ARCHIVE}" ${{ matrix.binary_name }}
           echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
 
@@ -148,7 +148,7 @@ jobs:
           VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          $archive = "aioncore-v${env:VERSION}-${{ matrix.target }}.zip"
+          $archive = "veryagent-core-v${env:VERSION}-${{ matrix.target }}.zip"
           Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" -DestinationPath "dist/${archive}" -Force
           "ARCHIVE=${archive}" | Out-File -FilePath $env:GITHUB_ENV -Append
 
@@ -176,7 +176,7 @@ jobs:
         shell: bash
         run: |
           cd artifacts
-          sha256sum aioncore-* > aioncore-checksums.txt
+          sha256sum veryagent-core-* > veryagent-core-checksums.txt
 
       - name: Upload release assets
         shell: bash
