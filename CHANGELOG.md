@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.39](https://github.com/plhys/VeryAgentCore/compare/v0.1.38...v0.1.39) (2026-06-28)
+
+
+### Bug Fixes
+
+* rename aionui.rs to veryagent.rs in mcp adapters ([733f5f5](https://github.com/plhys/VeryAgentCore/commit/733f5f5893b8b8910068bc8b01a10021c0b81d7f))
+
+
+### Code Refactoring
+
+* rename AionCore to VeryAgentCore ([80fd8bf](https://github.com/plhys/VeryAgentCore/commit/80fd8bf912cd8c3024e6e5980a77859c91a291d1))
+
 ## [0.1.38](https://github.com/iOfficeAI/AionCore/compare/v0.1.37...v0.1.38) (2026-06-26)
 
 
